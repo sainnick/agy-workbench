@@ -1,0 +1,326 @@
+{
+  "projects": [
+    {
+      "id": "sanhao",
+      "name": "叁号暗房 Logos",
+      "group": "抖音矩阵",
+      "color": "#7a4fd1",
+      "paths": [
+        "/Users/eru/work/philosophy-remotion",
+        "/Users/eru/work/philosophy-remotion-nf"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "a71da96f-396c-44bd-8b68-4d04679cda4c"
+        }
+      ],
+      "claudeCwd": [
+        "/Users/eru/work/philosophy-remotion",
+        "/Users/eru/work/philosophy-remotion-nf"
+      ],
+      "status": "running",
+      "headline": "《边沁：功利主义》正片：Claude 在 philosophy-remotion-nf 重做审美（20:28 起后台任务）",
+      "lastDecision": {
+        "at": "2026-11-06 18:20",
+        "quote": "不要再用这个蓝色调了…也不要黑金色调"
+      },
+      "next": "Claude 交成片 → 你审片",
+      "owner": "Claude",
+      "gates": [
+        "0 外部照片、0 配音，纯 Remotion 几何/排版",
+        "做片只由 Claude 做，AGY 只写稿",
+        "禁用蓝色调、黑金色调"
+      ]
+    },
+    {
+      "id": "zhezhou",
+      "name": "折舟 · 像塑特效",
+      "group": "抖音矩阵",
+      "color": "#d1694f",
+      "paths": [
+        "/Users/eru/effect/xiangsu",
+        "/Users/eru/effect/out"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "32cca896-e92c-4078-860e-d0d24be7dcf6"
+        }
+      ],
+      "claudeCwd": [
+        "/Users/eru/effect"
+      ],
+      "status": "running",
+      "headline": "开发 ② MC 万物附魔台、③ MC 钓鱼竿钩万物",
+      "lastDecision": {
+        "at": "2026-11-06 19:22",
+        "quote": "万物附魔台不错…3 钩万物也不错"
+      },
+      "next": "做出可预览版本 → 实机录屏验收",
+      "owner": "AGY",
+      "gates": [
+        "工程只建在 /Users/eru/effect/xiangsu/",
+        "必须 effect-house-runtime-qa 实机录屏验收后才算交付",
+        "工程目录 /Users/eru/effect/xiangsu/，输出 /Users/eru/effect/out/"
+      ]
+    },
+    {
+      "id": "echo",
+      "name": "回声档案 Echo",
+      "group": "抖音矩阵",
+      "color": "#2f8f6b",
+      "paths": [
+        "/Users/eru/echo"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "497616b9-c116-48c5-9e7f-5a8d4baea92a"
+        }
+      ],
+      "claudeCwd": [
+        "/Users/eru/echo"
+      ],
+      "status": "running",
+      "headline": "EP02《OK Computer》：Claude 已重写 P4《No Surprises》，正在按同一标准复查全稿",
+      "lastDecision": {
+        "at": "2026-11-06 20:17",
+        "quote": "讲的很无聊，完全没有讲出这首歌的厉害之处"
+      },
+      "next": "Claude 交全稿复查版 → 你一段一段审",
+      "owner": "Claude",
+      "gates": [
+        "一段一段推进，不整坨发",
+        "口播里不翻译英文歌词",
+        "Remotion 做片只在 echo 原 Claude 会话做",
+        "配音只用 Seed-TTS 2.0"
+      ]
+    },
+    {
+      "id": "zeroclinic",
+      "name": "第零诊室 Zero Clinic",
+      "group": "抖音矩阵",
+      "color": "#c2913a",
+      "paths": [
+        "/Users/eru/AIGC/projects/zero-clinic"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "f5fc7b1d-3bf0-4bc6-897f-7d902efd07d3"
+        }
+      ],
+      "claudeCwd": [
+        "/Users/eru/AIGC"
+      ],
+      "status": "decide",
+      "headline": "EP01 三个零说教剧本：①《两清》②《最后一版》③《替一天》",
+      "lastDecision": {
+        "at": "2026-11-06",
+        "quote": "感觉衔接的很尴尬生硬"
+      },
+      "next": "你选一个剧本 → Flow Omni 360p 草稿审节奏",
+      "owner": "eru",
+      "gates": [
+        "剧本先定稿再出片",
+        "先 360p 草稿，拍板后再 Upscale",
+        "正片 0 哲学名词，不在画面里弹教科书词条（eru：衔接尴尬生硬）",
+        "出片管线：Google Flow · Omni 1.2 Flash（Ultra 每月 25,000 Flow Credits；360p 1 积分/秒，720p 3 积分/秒）"
+      ],
+      "doc": "/Users/eru/AIGC/projects/zero-clinic/scripts/EP01_零说教纯故事算账流三剧本_2026-11-06.md",
+      "updatedAt": "2026-11-06T12:53:58.775Z"
+    },
+    {
+      "id": "leiting",
+      "name": "雷霆「翻倍」系列",
+      "group": "抖音矩阵",
+      "color": "#5a6b7a",
+      "paths": [
+        "/Users/eru/雷霆视频制作"
+      ],
+      "sessions": [],
+      "status": "idle",
+      "headline": "暂无活跃窗口",
+      "next": "",
+      "owner": "eru",
+      "gates": []
+    },
+    {
+      "id": "zeus",
+      "name": "希腊神话 Zeus",
+      "group": "抖音矩阵",
+      "color": "#5a6b7a",
+      "paths": [
+        "/Users/eru/Documents/希腊神话"
+      ],
+      "sessions": [],
+      "status": "idle",
+      "headline": "暂无活跃窗口",
+      "next": "",
+      "owner": "eru",
+      "gates": []
+    },
+    {
+      "id": "game",
+      "name": "时代进化 · 模拟经营小游戏",
+      "group": "副业与工程",
+      "color": "#3a7bc2",
+      "paths": [
+        "/Users/eru/Desktop/agy工作站/小游戏研发_灰盒原型"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "4331ec68-bb75-45d7-88f5-042d86c0a4cb"
+        }
+      ],
+      "claudeCwd": [
+        "/Users/eru/Desktop/agy工作站/小游戏研发_灰盒原型"
+      ],
+      "status": "running",
+      "headline": "Phase 1 原型已出（Tiny Swords 村民建城）；Claude 正在审设计宪法与代码",
+      "lastDecision": {
+        "at": "2026-11-06 18:05",
+        "quote": "按你推荐的那个小游戏"
+      },
+      "next": "Deep Research + Claude 审查结论 → 定 Phase 2；确认是否按微信小游戏尺寸",
+      "owner": "Claude",
+      "gates": [
+        "模拟经营 85% / 战斗 15%",
+        "方案要先过 Deep Research 和 Claude 审",
+        "彻底废弃「小鸡打架对撞 HTML」",
+        "核心路线：1 人白手起家 → 接纳流民分工 → 资源加工链与城市规划 → 奇观跨时代（石器→青铜→盛唐→蒸汽→赛博）",
+        "设计宪法：/Users/eru/Desktop/agy工作站/小游戏研发_灰盒原型/GAME_DESIGN_BIBLE.md"
+      ],
+      "doc": "/Users/eru/Desktop/agy工作站/小游戏研发_灰盒原型/GAME_DESIGN_BIBLE.md"
+    },
+    {
+      "id": "h3",
+      "name": "H3 算力工作台",
+      "group": "副业与工程",
+      "color": "#3a9ec2",
+      "paths": [
+        "/Users/eru/Desktop/agy工作站/.agents/ultra_hub/h3_studio_webui"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "ad706c0a-e897-4fe7-85f6-7b8fc557708e"
+        }
+      ],
+      "claudeCwd": [
+        "/Users/eru/Desktop/agy工作站/.agents/ultra_hub/h3_studio_webui"
+      ],
+      "status": "running",
+      "headline": "已用 rea@6.8.0 逆向 MiniMax Design.app (@hilo/desktop V4.0.4) 重构 H3 Studio Desktop V4.0（含官方 Prompt 编译器、无限节点画布、多轨剪辑台导出剪映草稿包）",
+      "lastDecision": {
+        "at": "2026-11-06 20:30",
+        "quote": "把咱电脑里的 minimax design 给 rea 一下（用开源 rea 项目），然后去重构加强我们的视频工作台，顺便准备出个桌面端的感觉"
+      },
+      "next": "你审阅桌面端三视图（监视器 / 无限节点画布 / 多轨剪辑台）；生片接口当前回传演示 MP4（待挂载实机 Colab/Flow Worker）",
+      "owner": "AGY",
+      "gates": [
+        "没接通真实 GPU 推理的接口必须诚实标注演示/Mock（计费账本、CDK 核销、科研红章明细单、官方规范编译器、剪映草稿包 .zip 导出均为真实后端，/api/generate 视频渲染当前回传本地演示 MP4）",
+        "100% 所选即所得，严禁偷换模型",
+        "闲鱼图文严禁出现 Google/谷歌/Gemini/免翻墙/免魔法 等违禁词",
+        "定价：1 网站积分 = 1 官方算力点 = ¥0.08（各模型扣分明细见 _archive/2026-11-06/MEMORY_MASTER_旧版.md）"
+      ]
+    },
+    {
+      "id": "xianyu",
+      "name": "闲鱼数字会员矩阵店",
+      "group": "副业与工程",
+      "color": "#8a8a8a",
+      "paths": [
+        "/Users/eru/Desktop/agy工作站/淘宝闲鱼海外数字会员矩阵店_首批上架包"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "450abda7-7400-4ecc-bf62-05f52c4f3644"
+        }
+      ],
+      "status": "stopped",
+      "headline": "批量注册账号转卖卡密",
+      "next": "",
+      "owner": "eru",
+      "gates": []
+    },
+    {
+      "id": "taskportal",
+      "name": "Task Portal / 海外认证派单",
+      "group": "副业与工程",
+      "color": "#8a8a8a",
+      "paths": [
+        "/Users/eru/Desktop/agy工作站/.agents/ultra_hub/task_portal"
+      ],
+      "sessions": [
+        {
+          "engine": "agy",
+          "cid": "b8f31126-0fa9-4059-bc3e-d9511d7e2cdc"
+        }
+      ],
+      "claudeCwd": [
+        "/Users/eru/Desktop/agy工作站/.agents/ultra_hub/task_portal"
+      ],
+      "status": "stopped",
+      "headline": "海外认证派单",
+      "next": "",
+      "owner": "eru",
+      "gates": []
+    },
+    {
+      "id": "client",
+      "name": "商业客片与定制单",
+      "group": "教研 · 商单 · 网络",
+      "color": "#a0527a",
+      "paths": [
+        "/Users/eru/Desktop/客户文件",
+        "/Users/eru/work/philosophy-remotion-client"
+      ],
+      "sessions": [],
+      "status": "idle",
+      "headline": "笑笑 / 李伟 / 糯米 / 红裤子哥苹果",
+      "next": "",
+      "owner": "eru",
+      "gates": [
+        "商单只放 client/work 分支，不混进叁号暗房主仓"
+      ]
+    },
+    {
+      "id": "teaching",
+      "name": "英语教研 · MTI · 毕业论文",
+      "group": "教研 · 商单 · 网络",
+      "color": "#4f8a3a",
+      "paths": [
+        "/Users/eru/Documents/备课",
+        "/Users/eru/Documents/MTI翻译作业与讲评",
+        "/Users/eru/Documents/毕业论文"
+      ],
+      "sessions": [],
+      "status": "idle",
+      "headline": "备课 / 翻译批改 / 论文",
+      "next": "",
+      "owner": "eru",
+      "gates": []
+    },
+    {
+      "id": "network",
+      "name": "网络与代理",
+      "group": "教研 · 商单 · 网络",
+      "color": "#5a6b7a",
+      "paths": [
+        "/Users/eru/network"
+      ],
+      "sessions": [],
+      "status": "idle",
+      "headline": "mihomo 7897",
+      "next": "",
+      "owner": "eru",
+      "gates": [
+        "不碰 ~/.mihomo-claude、LaunchAgents、/etc/hosts"
+      ]
+    }
+  ]
+}

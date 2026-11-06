@@ -1,0 +1,298 @@
+{
+  "version": "3.0.0",
+  "maxHops": 8,
+  "debounceMs": 2500,
+  "projects": {
+    "sanhao": {
+      "projectId": "e3c351cc-716a-470f-a4a2-154c8de8eac5",
+      "name": "叁号暗房",
+      "workspaceUri": "file:///Users/eru/work",
+      "cwd": "/Users/eru/work/philosophy-remotion",
+      "filmBuilder": "claude-original-session-only",
+      "approvalGate": [
+        "严禁未经 eru 审定全文稿、画风排版与真人录音前擅自做片",
+        "Remotion 做片统一由 eru 在原项目的 Claude 会话中执行，AGY 仅负责文稿与前置准备"
+      ]
+    },
+    "zhezhou": {
+      "projectId": "d2000001-0002-4000-8000-000000000002",
+      "name": "折舟像塑特效",
+      "workspaceUri": "file:///Users/eru/effect",
+      "cwd": "/Users/eru/effect",
+      "filmBuilder": "agy-effect-house",
+      "approvalGate": [
+        "必须通过 effect-house-runtime-qa 实机预览录屏验收后方可交付"
+      ]
+    },
+    "echo": {
+      "projectId": "a0ccfc45-e214-4550-8508-663e8e5817af",
+      "name": "echo",
+      "workspaceUri": "file:///Users/eru/echo",
+      "cwd": "/Users/eru/echo",
+      "filmBuilder": "claude-original-session-only",
+      "voiceoverEngine": "volcengine-seedtts-2.0",
+      "approvalGate": [
+        "Remotion 做片 100% 由 eru 在 /Users/eru/echo 原 Claude 会话中继续执行，AGY 严禁擅自写 Remotion 代码或渲染成片",
+        "配音 100% 使用火山引擎 Seed-TTS 2.0 (seedtts.mjs)，严禁使用 macOS say",
+        "AGY 仅负责剧本打磨、素材登记表.csv、CC 原片下载、前置准备_给Claude.md 与 开工指令.md"
+      ]
+    },
+    "zeroclinic": {
+      "projectId": "d6000001-0006-4000-8000-000000000006",
+      "name": "第零诊室 ZeroClinic",
+      "workspaceUri": "file:///Users/eru/AIGC",
+      "cwd": "/Users/eru/AIGC",
+      "approvalGate": [
+        "启用云端 GPU (Colab L4/A100) 前必须确认任务并在闲置 5 分钟内自动 colab stop 释放算力"
+      ]
+    },
+    "sidehustle": {
+      "projectId": "d8000001-0008-4000-8000-000000000008",
+      "name": "副业与小游戏矩阵",
+      "workspaceUri": "file:///Users/eru/Desktop/agy%E5%B7%A5%E4%BD%9C%E7%AB%99/.agents/ultra_hub",
+      "cwd": "/Users/eru/Desktop/agy工作站/.agents/ultra_hub",
+      "approvalGate": [
+        "一事一独立专窗（SheerID / 淘宝闲鱼矩阵店 / 时代进化小游戏 / H3算力出租工作台 严格隔离）"
+      ]
+    },
+    "network": {
+      "projectId": "bbf3d8e8-78a8-4a2e-b5f9-44348c91d5be",
+      "name": "mac-pack",
+      "workspaceUri": "file:///Users/eru/Downloads/mac-pack",
+      "cwd": "/Users/eru/network",
+      "approvalGate": [
+        "严禁触碰 ~/.mihomo-claude、LaunchAgents、/etc/hosts 及 Claude 产品与域名"
+      ]
+    },
+    "hub": {
+      "projectId": "8443bc9f-2810-4330-999e-79f5406f5bc6",
+      "name": "agy工作站",
+      "workspaceUri": "file:///Users/eru/Desktop/agy%E5%B7%A5%E4%BD%9C%E7%AB%99",
+      "cwd": "/Users/eru/Desktop/agy工作站"
+    }
+  },
+  "sessionPinMap": {
+    "a71da96f-396c-44bd-8b68-4d04679cda4c": "sanhao",
+    "47b3af7c-0389-486e-b017-5f44ea506527": "sanhao",
+    "32cca896-e92c-4078-860e-d0d24be7dcf6": "zhezhou",
+    "497616b9-c116-48c5-9e7f-5a8d4baea92a": "echo",
+    "d1c7a01d-ac5e-441e-876e-be64db94ab08": "echo",
+    "f5fc7b1d-3bf0-4bc6-897f-7d902efd07d3": "zeroclinic",
+    "450abda7-7400-4ecc-bf62-05f52c4f3644": "sidehustle",
+    "4331ec68-bb75-45d7-88f5-042d86c0a4cb": "sidehustle",
+    "ad706c0a-e897-4fe7-85f6-7b8fc557708e": "sidehustle",
+    "66eb0741-7cc8-4221-ac2e-6617d9cec402": "sidehustle",
+    "f9055825-52b3-4d6c-9023-331ac6f68543": "hub",
+    "a4907a6b-d695-42ca-a12a-bc176b5b082c": "sidehustle"
+  },
+  "allowUsers": [],
+  "_routesNote": "路由表是会话归属的唯一事实来源：bridge 关键词直投、agy-route route --to=<键>、/claude <键>、weixin-send 回执目录都读这里。engine 默认 agy；只有改成 claude/codex 才会默认派给对应 CLI。关键词需唯一命中才直投。",
+  "routes": {
+    "sanhao": {
+      "name": "叁号暗房",
+      "project": "sanhao",
+      "engine": "agy",
+      "cid": "a71da96f-396c-44bd-8b68-4d04679cda4c",
+      "cwd": "/Users/eru/work/philosophy-remotion",
+      "keywords": [
+        "叁号暗房",
+        "边沁",
+        "功利主义",
+        "philosophy-remotion",
+        "暗房"
+      ],
+      "acceptance": {
+        "kinds": [
+          "doc",
+          "video"
+        ],
+        "review": "claude",
+        "label": "文稿（.md/.docx）或成片（视频）"
+      },
+      "desc": "叁号暗房：哲学/文学/心理人文抖音号，边沁功利主义等成片，Remotion 做片"
+    },
+    "zhezhou": {
+      "name": "折舟像塑特效",
+      "project": "zhezhou",
+      "engine": "agy",
+      "cid": "32cca896-e92c-4078-860e-d0d24be7dcf6",
+      "cwd": "/Users/eru/effect",
+      "keywords": [
+        "折舟",
+        "像塑",
+        "附魔台",
+        "钓鱼竿",
+        "effect house",
+        "像塑特效"
+      ],
+      "acceptance": {
+        "kinds": [
+          "video"
+        ],
+        "review": null,
+        "label": "实机预览录屏（视频）"
+      },
+      "desc": "折舟：像塑 Effect House AR 特效抖音号，MC 附魔台、钓鱼竿钩万物"
+    },
+    "echo": {
+      "name": "回声档案Echo",
+      "project": "echo",
+      "engine": "agy",
+      "cid": "497616b9-c116-48c5-9e7f-5a8d4baea92a",
+      "cwd": "/Users/eru/echo",
+      "keywords": [
+        "回声档案",
+        "radiohead",
+        "ok computer",
+        "daft punk",
+        "电台司令",
+        "回声",
+        "echo"
+      ],
+      "acceptance": {
+        "kinds": [
+          "doc",
+          "video"
+        ],
+        "review": "claude",
+        "label": "文稿（.md/.docx）或成片（视频）"
+      },
+      "desc": "回声档案 Echo：音乐纪录片抖音号，Daft Punk、Radiohead OK Computer 文稿"
+    },
+    "zeroclinic": {
+      "name": "第零诊室ZeroClinic",
+      "project": "zeroclinic",
+      "engine": "agy",
+      "cid": "f5fc7b1d-3bf0-4bc6-897f-7d902efd07d3",
+      "cwd": "/Users/eru/AIGC",
+      "keywords": [
+        "第零诊室",
+        "zero clinic",
+        "zeroclinic",
+        "诊室"
+      ],
+      "acceptance": {
+        "kinds": [
+          "doc",
+          "video"
+        ],
+        "review": "claude",
+        "label": "剧本（.md/.docx）或成片（视频）"
+      },
+      "desc": "第零诊室 Zero Clinic：AIGC 哲学奇幻短片，剧本《两清》《最后一版》《替一天》"
+    },
+    "game": {
+      "name": "时代进化小游戏",
+      "project": "sidehustle",
+      "engine": "agy",
+      "cid": "4331ec68-bb75-45d7-88f5-042d86c0a4cb",
+      "cwd": "/Users/eru/Desktop/agy工作站/小游戏研发_灰盒原型",
+      "keywords": [
+        "小游戏",
+        "tiny swords",
+        "时代进化",
+        "灰盒",
+        "游戏"
+      ],
+      "acceptance": {
+        "kinds": [
+          "url",
+          "file"
+        ],
+        "mockScan": true,
+        "review": null,
+        "label": "可打开的试玩地址或构建产物，且代码里没有 mock/假数据"
+      },
+      "desc": "时代进化小游戏：从一个人发展成文明的模拟经营小游戏（Tiny Swords）"
+    },
+    "h3": {
+      "name": "H3算力工作台",
+      "project": "sidehustle",
+      "engine": "agy",
+      "cid": "ad706c0a-e897-4fe7-85f6-7b8fc557708e",
+      "cwd": "/Users/eru/Desktop/agy工作站/.agents/ultra_hub/h3_studio_webui",
+      "keywords": [
+        "h3工作台",
+        "h3 工作台",
+        "算力工作台",
+        "h3_studio",
+        "h3",
+        "算力"
+      ],
+      "acceptance": {
+        "kinds": [
+          "url"
+        ],
+        "mockScan": true,
+        "review": null,
+        "label": "可访问的页面地址，且代码里没有 mock/假数据"
+      },
+      "desc": "H3 算力工作台：Veo/Omni/H3 视频生成网站、积分定价、闲鱼上架"
+    },
+    "client": {
+      "name": "商业客单",
+      "project": null,
+      "engine": "agy",
+      "cid": "4d24144d-019d-4d5d-a8ca-948a8c058ca0",
+      "cwd": "/Users/eru/Desktop/客户文件",
+      "keywords": [
+        "笑笑",
+        "李伟",
+        "糯米",
+        "红裤子",
+        "客户",
+        "商单",
+        "甲方"
+      ],
+      "desc": "商业客户定制单：笑笑、李伟、糯米、红裤子哥苹果等客户的视频、文案、Word"
+    },
+    "teaching": {
+      "name": "英语教研·MTI·论文",
+      "project": null,
+      "engine": "agy",
+      "cid": null,
+      "cwd": "/Users/eru/Documents/备课",
+      "keywords": [
+        "备课",
+        "课件",
+        "教案",
+        "mti",
+        "翻译作业",
+        "毕业论文",
+        "开题",
+        "鳌江",
+        "考编"
+      ],
+      "desc": "英语教学备课课件、温州考编、MTI 翻译作业批改、毕业论文"
+    },
+    "leiting": {
+      "name": "雷霆「翻倍」",
+      "project": null,
+      "engine": "agy",
+      "cid": null,
+      "cwd": "/Users/eru/雷霆视频制作",
+      "keywords": [
+        "雷霆",
+        "翻倍"
+      ],
+      "desc": "雷霆「翻倍」系列脑洞爽片抖音号"
+    },
+    "zeus": {
+      "name": "希腊神话",
+      "project": null,
+      "engine": "agy",
+      "cid": null,
+      "cwd": "/Users/eru/Documents/希腊神话",
+      "keywords": [
+        "宙斯",
+        "希腊神话",
+        "zeus",
+        "奥林匹斯"
+      ],
+      "desc": "希腊神话科普抖音号（宙斯与十二主神）"
+    }
+  },
+  "_acceptanceNote": "acceptance = 该项目「完成」的最低证据。kinds 任一满足即可：doc=2小时内生成的文稿文件，video=2小时内生成且 ffprobe 可读的视频，url=能访问的地址，file=2小时内生成的任意文件。mockScan=扫描项目目录 mock/假数据特征。review=claude 时脚本验收通过后再交 Claude 只读审查。本文件只能由 eru 或其指定的 Claude 会话修改，AGY 不得改动。",
+  "classifier": "off",
+  "_classifierNote": "独立分拣模型已停用。无明确去向的微信由原总控结合聊天上下文分发。"
+}
