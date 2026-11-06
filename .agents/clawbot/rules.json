@@ -293,6 +293,6 @@
     }
   },
   "_acceptanceNote": "acceptance = 该项目「完成」的最低证据。kinds 任一满足即可：doc=2小时内生成的文稿文件，video=2小时内生成且 ffprobe 可读的视频，url=能访问的地址，file=2小时内生成的任意文件。mockScan=扫描项目目录 mock/假数据特征。review=claude 时脚本验收通过后再交 Claude 只读审查。本文件只能由 eru 或其指定的 Claude 会话修改，AGY 不得改动。",
-  "classifier": "off",
-  "_classifierNote": "独立分拣模型已停用。无明确去向的微信由原总控结合聊天上下文分发。"
+  "classifier": "agy-argon-low",
+  "_classifierNote": "需要语义判断的微信由 Argon Low 后台分拣。精确引用和明确项目直达，超时或不确定交原总控。"
 }

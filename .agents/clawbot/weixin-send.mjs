@@ -8,12 +8,13 @@
  *   node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs --tool-start "<工具名>"
  *   node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs --tool-end "<工具名>"
  *
- * 验收 Gate（脚本强制，不靠自觉）：
- *   - 正文声称「完成/上线/跑通/已修复…」却没有任何回执 → 开头强制加【未附验收回执 · Agent 自述】
- *   - 正文声称「Claude/Codex 做了…」但 ledger 与引擎原生会话记录里近 6 小时都查不到调用 → 强制加【疑似冒充】
- *   - 回执发现 mock/fake/TODO 特征 → 强制加【原型/Mock，未接真实后端】
- *   - 正文声称「调研/Deep Research/对标过」却没附 research: 证据文件 → 强制加【调研未经核验】
- *   - 随消息附带的文件自动做 file 回执
+ * 验收 Gate（脚本强制，不靠自觉；2026-11-07 Claude 加固后的格式）：
+ *   - 正常聊天/确认/提问：原样发出，不加任何横幅
+ *   - 交付汇报或核验异常：只在正文末尾加一行附注，如「— 🧾 已核验: a.mp4✓ | 🔎 已交 Claude 审查」「— ⚠️ 缺回执·自述」
+ *   - 带附件时：正文先单独发文字，附件随后逐个发（附件说明在微信里会被吞）
+ *   - --engine= / AGY_ENGINE 已停用；系统身份只认 job-runner 的一次性票据 CLAWBOT_JOB_TICKET
+ *   - 正文里手打的系统保留头（「Claude 审查通过 · 可拍板」等）一律剥成「窗口自述」
+ *   - 未传项目 --session 的「完成」永不给绿勾；先发成功、再写 proofs.jsonl / 核销承诺 / 排审查
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -26,10 +27,10 @@ import { sendTyping } from "./dist/src/api/api.js";
 import { MessageItemType, TypingStatus } from "./dist/src/api/types.js";
 import { CDN_BASE_URL } from "./dist/src/auth/accounts.js";
 import { initializeQuoteStore } from "./dist/src/messaging/quote-store.js";
-import { readJson, updateJson, appendJsonl } from "./state-io.mjs";
+import { readJson, updateJson, appendJsonl, readJsonlTail } from "./state-io.mjs";
 import { processOutgoing, holdForReview } from "./commitments.mjs";
 import { PEER_FILE, MSG_MAP_FILE, HUB_DIR, UUID_RE, JOBS_DIR, CLAWBOT_DIR, resolveMirror, loadRules, loadRouterState, updateRouterState, routerCidSet, routeKeyForCid } from "./core.mjs";
-import { runProof, checkAcceptance, detectCompletionClaim, detectResearchClaim, detectEngineClaims, hasEngineEvidence, PROOFS_FILE } from "./proof.mjs";
+import { runProof, checkAcceptance, detectCompletionClaim, detectResearchClaim, detectEngineClaims, hasEngineEvidence, PROOFS_FILE, DELEGATIONS_FILE } from "./proof.mjs";
 
 const MSG_MAP_MAX_IDS = 3000;
 
@@ -208,7 +209,7 @@ export function recordPendingReply({ cid, title, body, filePath }) {
   } catch {}
 }
 
-export function recordMessageSessionMap({ messageId, serverMessageId, body, filePath, sessionCid, sessionTitle, engine, msgId = null }) {
+export function recordMessageSessionMap({ messageId, serverMessageId, body, filePath, sessionCid, sessionTitle, engine, msgId = null, system = false }) {
   try {
     const resolved = inferSessionIdentity({ sessionCid, sessionTitle, engine });
     const entry = {
@@ -220,6 +221,7 @@ export function recordMessageSessionMap({ messageId, serverMessageId, body, file
       bodySnippet: (body || "").slice(0, 300),
       filePath: filePath || null,
       msgId: msgId || null,
+      ...(system ? { system: true } : {}), // 桥/看门狗/审查等系统消息：不算窗口自己的回复
       createdAt: Date.now(),
     };
     updateJson(MSG_MAP_FILE, { byId: {}, recent: [] }, (map) => {
@@ -245,9 +247,8 @@ export function recordMessageSessionMap({ messageId, serverMessageId, body, file
   }
 }
 
-/** Claude 只读审查排队（独立进程，job-runner 执行；同一窗口同一批交付物 15 分钟内不重复排） */
-function enqueueReview({ cid, routeKey, title, claimText, evidence }) {
-  const st = loadRouterState();
+/** 同一窗口同一批交付物是否已有审查在跑（纯读取，发送前用来决定附注文案） */
+function reviewSignature(cid, evidence) {
   const stamp = (e) => {
     try {
       const x = fs.statSync(e);
@@ -256,10 +257,20 @@ function enqueueReview({ cid, routeKey, title, claimText, evidence }) {
       return e;
     }
   };
-  const sig = `${cid}|${[...evidence].map(stamp).sort().join(",")}`;
-  const prev = st.reviews?.[cid];
+  return `${cid}|${[...evidence].map(stamp).sort().join(",")}`;
+}
+
+function reviewAlreadyPending(cid, evidence) {
+  const prev = loadRouterState().reviews?.[cid];
   // 只有上一次审查还没结束、且交付物一字未变时才不重复排队；改过的版本（同路径重新渲染也算）一定重审
-  if (prev?.pendingJob && prev?.lastSig === sig && Date.now() - (prev.lastAt || 0) < 30 * 60_000) return null;
+  return Boolean(prev?.pendingJob && prev?.lastSig === reviewSignature(cid, evidence) && Date.now() - (prev.lastAt || 0) < 30 * 60_000);
+}
+
+/** Claude 只读审查排队（独立进程，job-runner 执行）。只在微信发送成功之后调用。 */
+function enqueueReview({ cid, routeKey, title, claimText, evidence }) {
+  if (reviewAlreadyPending(cid, evidence)) return null;
+  const st = loadRouterState();
+  const sig = reviewSignature(cid, evidence);
   fs.mkdirSync(JOBS_DIR, { recursive: true });
   const id = `r${Date.now().toString(36)}${crypto.randomBytes(2).toString("hex")}`;
   const rules = loadRules();
@@ -289,15 +300,67 @@ function enqueueReview({ cid, routeKey, title, claimText, evidence }) {
 }
 
 /**
- * 验收 Gate：返回 { text, receipts, verdict, results }
- * verdict: "accepted"（脚本验收通过，无需审查）| "reviewing"（已交 Claude 审查）| "rejected"（声称完成但不够格）| "none"
- * 项目在 rules.json 里有 acceptance 模板时，「完成」只能由这里判定：不够格的一律降级成「进度」。
+ * 内部身份核验（审计 P0-1/P0-2）：命令行 --engine= 与 AGY_ENGINE 不再被信任。
+ * 只认 job-runner 写的一次性票据（CLAWBOT_JOB_TICKET），读到即删；
+ *  - role=review：对应 jobs/<id>.json 必须是 engine=review 的审查任务 → 系统消息，跳过闸门
+ *  - role=worker：delegations.jsonl 里必须有这个 jobId 的真实非 review 写任务记录 → engine=claude/codex
  */
-async function applyProofGate({ text, proofs, files, sessionCid, cwd, engine = "", dryRun = false }) {
-  if (engine === "review") return { text, receipts: [], verdict: "none", results: [] };
-  if (isSystemNotificationText(text) && proofs.length === 0 && files.length === 0 && !detectCompletionClaim(text)) return { text, receipts: [], verdict: "none", results: [] };
+export function consumeJobTicket(nonce) {
+  if (!/^[0-9a-f]{32}$/.test(String(nonce || ""))) return null;
+  const f = path.join(JOBS_DIR, "tickets", `${nonce}.json`);
+  let t = null;
+  try {
+    t = JSON.parse(fs.readFileSync(f, "utf8"));
+  } catch {
+    return null;
+  }
+  try {
+    fs.rmSync(f, { force: true });
+  } catch {}
+  if (!t?.jobId || Date.now() - (t.createdAt || 0) > 2 * 3600_000) return null;
+  let job = null;
+  try {
+    job = JSON.parse(fs.readFileSync(path.join(JOBS_DIR, `${t.jobId}.json`), "utf8"));
+  } catch {
+    return null;
+  }
+  if (t.role === "review") return job.engine === "review" ? { engine: "review", jobId: t.jobId } : null;
+  if (!["claude", "codex"].includes(job.engine) || job.engine !== t.engine) return null;
+  const real = readJsonlTail(DELEGATIONS_FILE, 800).some((d) => d.jobId === t.jobId && d.engine === job.engine && d.role !== "review" && d.mode !== "review" && d.status === "started");
+  return real ? { engine: job.engine, jobId: t.jobId, project: job.project || null } : null;
+}
+
+/** 系统保留头：只有 job-runner / bridge 能发。普通窗口手打的一律剥掉并标「窗口自述」（审计 P0-2） */
+const RESERVED_HEAD_RE = /[✅🔎↩️🛑🟡]️?\s*【[^】]{0,40}(Claude\s*审查|审查(通过|未通过|没过)|可拍板|验收通过|已退回重做|进度\s*·\s*未通过)[^】]{0,40}】/gu;
+const RESERVED_LEAD_RE = /^\s*(🟣\s*\[Claude|🤖\s*\[Codex|🔁\s*\[系统|⏰\s*\[系统)/u;
+export function stripReservedHeads(text) {
+  let t = String(text || "");
+  let hit = false;
+  t = t.replace(RESERVED_HEAD_RE, () => {
+    hit = true;
+    return "（窗口自述）";
+  });
+  if (RESERVED_LEAD_RE.test(t)) {
+    hit = true;
+    t = t.replace(RESERVED_LEAD_RE, (m) => `（窗口自述）${m.replace(/^\s*[🟣🤖🔁⏰]️?\s*/u, "")}`);
+  }
+  return { text: t, stripped: hit };
+}
+
+/**
+ * 验收 Gate（纯计算，不落账、不排审查——这些都等微信发送成功后再做）。返回：
+ *   verdict: "accepted" | "reviewing" | "rejected" | "none"
+ *   note:    单行紧凑附注（放正文末尾；正常聊天为空）
+ *   tags:    短标签数组（写 proofs.jsonl 用）
+ */
+async function applyProofGate({ text, proofs, files, sessionCid, cwd, engine = "", project = null }) {
+  const empty = { note: "", tags: [], receipts: [], verdict: "none", results: [], claim: false, rk: null, route: null, acc: null };
+  if (engine === "review") return empty;
+  if (isSystemNotificationText(text) && proofs.length === 0 && files.length === 0 && !detectCompletionClaim(text)) return empty;
   const rules = loadRules();
-  const rk = sessionCid ? routeKeyForCid(sessionCid, rules) || (sessionCid.startsWith("claude:") ? sessionCid.slice(7) : null) : null;
+  let rk = sessionCid ? routeKeyForCid(sessionCid, rules) || (sessionCid.startsWith("claude:") ? sessionCid.slice(7) : null) : null;
+  if (!rk && project && rules.routes?.[project]) rk = project; // 票据核验过的 Claude/Codex 后台任务按任务登记的项目判
+  if (rk && !rules.routes?.[rk]) rk = null;
   const route = rk ? rules.routes?.[rk] : null;
   const routeCwd = route?.cwd || null;
   const acceptance = route?.acceptance || null;
@@ -321,56 +384,83 @@ async function applyProofGate({ text, proofs, files, sessionCid, cwd, engine = "
   const tags = [];
   let verdict = "none";
   const acc = claim ? checkAcceptance(acceptance, results, text) : { defined: false };
-  if (claim && acc.defined) {
+  if (claim && !rk) {
+    // 未传有效项目 --session（或用总控 cid）：最多给警告，永远不给绿勾（审计 P0-4）
+    tags.push("⚠️ 未归属项目会话·不判验收");
+  } else if (claim && acc.defined) {
     if (!acc.satisfied) {
       verdict = "rejected";
-      tags.push(`🟡【进度 · 未通过验收，不算完成】缺：${acc.missing.join("；")}`);
+      tags.push(`⚠️ 未过验收·只算进度（缺：${acc.missing.join("；")}）`);
     } else if (acceptance.review === "claude" && engine !== "claude" && engine !== "codex") {
       verdict = "reviewing";
-      tags.push("🔎【脚本验收已过 · 已交 Claude 审查，结论稍后单独发】");
+      tags.push(reviewAlreadyPending(sessionCid, acc.evidence) ? "🔎 这批正在 Claude 审查" : "🔎 脚本已核验·已交 Claude 审查");
     } else {
       verdict = "accepted";
-      tags.push("✅【验收通过（脚本核验）】");
+      tags.push("✅ 已核验");
     }
   } else if (claim) {
     const hasPassingProof = results.some((r) => r.level === "ok");
-    if (results.length === 0) tags.push("⚠️【未附验收回执 · Agent 自述，未经脚本核验】");
-    else if (!hasPassingProof) tags.push("⚠️【回执都没有通过核验，「完成」仍是 Agent 自述】");
-    else verdict = "accepted";
+    if (results.length === 0) tags.push("⚠️ 缺回执·自述");
+    else if (!hasPassingProof) tags.push("⚠️ 回执未过·自述");
+    else {
+      verdict = "accepted";
+      tags.push("✅ 已核验");
+    }
   }
-  if (detectResearchClaim(text) && !specs.some((p) => p.startsWith("research:"))) {
-    tags.push("🔍【声称做过调研，但没附调研证据（--proof=research:/证据.md），未经核验】");
-  }
-  if (verdict !== "rejected" && results.some((r) => r.level === "fail")) tags.push("❌【回执核验未通过】");
-  if (verdict !== "rejected" && results.some((r) => r.mock)) tags.push("🧪【原型/Mock，未接真实后端】");
+  if (detectResearchClaim(text) && !specs.some((p) => p.startsWith("research:"))) tags.push("🔍 调研无证据");
+  if (verdict !== "rejected" && results.some((r) => r.level === "fail")) tags.push("❌ 回执核验失败");
+  if (verdict !== "rejected" && results.some((r) => r.mock)) tags.push("🧪 Mock 原型");
   for (const eng of detectEngineClaims(text)) {
     const ev = await hasEngineEvidence(eng, 6, routeCwd);
-    if (!ev.ok) tags.push(`🚫【近 6 小时查不到 ${eng === "claude" ? "Claude CLI" : "Codex"} 调用记录${ev.scope}，疑似冒充】`);
+    if (!ev.ok) tags.push(`🚫 查无 ${eng === "claude" ? "Claude" : "Codex"} 调用·疑似冒充`);
   }
 
-  if (verdict === "reviewing" && !dryRun) {
-    const jobId = enqueueReview({ cid: sessionCid, routeKey: rk, title: route?.name, claimText: text, evidence: acc.evidence });
-    if (!jobId) tags[tags.indexOf("🔎【脚本验收已过 · 已交 Claude 审查，结论稍后单独发】")] = "🔎【这批交付物正在 Claude 审查中，不重复排队】";
+  const icon = { ok: "✓", warn: "⚠", fail: "✗" };
+  const short = (r) => `${r.kind === "file" || r.kind === "research" ? path.basename(r.target) : r.kind === "mock" ? "mock扫描" : r.target.slice(0, 40)}${icon[r.level] || ""}`;
+  const receipts = results.map((r) => `${icon[r.level] || "•"} ${r.kind} · ${r.detail}`);
+  // 只有交付汇报或核验异常才出附注；普通聊天/附图不加任何东西
+  const anomaly = tags.some((t) => !t.startsWith("✅") && !t.startsWith("🔎"));
+  let note = "";
+  if (claim || anomaly) {
+    const ok = results.filter((r) => r.level === "ok");
+    const head = verdict === "accepted" || verdict === "reviewing" ? `🧾 已核验: ${ok.map(short).join(" ") || "—"}` : results.length ? `🧾 ${results.map(short).join(" ")}` : "";
+    const rest = tags.filter((t) => t !== "✅ 已核验");
+    note = `— ${[head, ...rest].filter(Boolean).join(" | ")}`;
+    if (note === "— ") note = "";
+  }
+  return { note, tags, receipts, verdict, results, claim, rk, route, acc };
+}
+
+/** 发送成功之后才落账：proofs.jsonl、承诺核销/登记、审查排队（审计 P0-5 / P1-3） */
+function commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, sent }) {
+  if (engine === "review") return;
+  if (gate.claim || gate.results.length || gate.tags.length) {
+    appendJsonl(PROOFS_FILE, {
+      session: sessionCid || "unassigned",
+      routeKey: gate.rk,
+      claim: gate.claim,
+      verdict: gate.verdict,
+      tags: gate.tags,
+      sent,
+      proofs: gate.results.map(({ kind, target, level, detail }) => ({ kind, target, level, detail })),
+      textHead: String(rawText || "").slice(0, 80),
+    });
+  }
+  if (!sent) return;
+  if (gate.verdict === "reviewing") {
+    enqueueReview({ cid: sessionCid, routeKey: gate.rk, title: gate.route?.name, claimText: rawText, evidence: gate.acc.evidence });
     try {
       holdForReview(sessionCid, 20); // 审查期间不算「答应了没交」
     } catch {}
   }
-
-  const icon = { ok: "✅", warn: "⚠️", fail: "❌" };
-  const receipts = results.map((r) => `${icon[r.level] || "•"} ${r.kind} · ${r.detail}`);
-  if (!dryRun && (claim || results.length || tags.length)) {
-    appendJsonl(PROOFS_FILE, {
-      session: sessionCid || "unassigned",
-      routeKey: rk,
-      claim,
-      verdict,
-      tags,
-      proofs: results.map(({ kind, target, level, detail }) => ({ kind, target, level, detail })),
-      textHead: String(text || "").slice(0, 80),
-    });
+  try {
+    // 承诺追踪：只有「验收通过」才算兑现；调研类承诺单独认 research 回执
+    const fulfilling = gate.verdict === "accepted" ? gate.results : gate.results.filter((r) => r.kind === "research");
+    const cm = processOutgoing({ cid: sessionCid, title: sessionTitle, text: rawText || "", results: fulfilling, dryRun: false });
+    if (cm.registered.length) console.log(`📝 登记承诺 ${cm.registered.map((c) => `${c.id}(${c.dueMin}分钟)`).join("、")}`);
+  } catch (e) {
+    console.error(`承诺登记失败（不影响发送）：${String(e?.message || e)}`);
   }
-  const tagged = tags.length ? `${tags.join("\n")}\n\n${text}` : text;
-  return { text: tagged, receipts, verdict, results };
 }
 
 async function cancelTypingIfActive(peer) {
@@ -405,19 +495,22 @@ async function main() {
   }
   let sessionCid = process.env.AGY_SESSION_ID || "";
   let sessionTitle = process.env.AGY_SESSION_TITLE || "";
-  let engine = process.env.AGY_ENGINE || "";
+  // --engine= / AGY_ENGINE 已废弃：只认 job-runner 的一次性票据
+  const ticket = process.env.CLAWBOT_JOB_TICKET ? consumeJobTicket(process.env.CLAWBOT_JOB_TICKET) : null;
+  const engine = ticket?.engine || "";
   let cwdFlag = "";
   let toolStart = "";
   let toolEnd = "";
   const proofs = [];
   let dryRun = process.env.CLAWBOT_DRY_RUN === "1";
+  let engineFlagIgnored = Boolean(process.env.AGY_ENGINE);
 
   const positional = [];
   for (let i = 0; i < rawArgs.length; i++) {
     const a = rawArgs[i];
     if (a.startsWith("--session=")) sessionCid = a.slice("--session=".length);
     else if (a.startsWith("--title=")) sessionTitle = a.slice("--title=".length);
-    else if (a.startsWith("--engine=")) engine = a.slice("--engine=".length);
+    else if (a.startsWith("--engine=")) engineFlagIgnored = true;
     else if (a.startsWith("--cwd=")) cwdFlag = a.slice("--cwd=".length);
     else if (a.startsWith("--proof=")) proofs.push(a.slice("--proof=".length));
     else if (a === "--dry-run") dryRun = true;
@@ -425,6 +518,7 @@ async function main() {
     else if (a === "--tool-end" && rawArgs[i + 1]) toolEnd = rawArgs[++i];
     else positional.push(a);
   }
+  if (engineFlagIgnored) console.error("⚠️ --engine= / AGY_ENGINE 已停用，按普通窗口消息处理。");
 
   const opts = {
     baseUrl: peer.baseUrl,
@@ -467,87 +561,70 @@ async function main() {
 
   // 窗口传旧 ID（已被接力窗口取代）也合法：统一换成现役 ID，承诺/审查/看门狗才对得上
   if (UUID_RE.test(sessionCid)) sessionCid = resolveMirror(sessionCid);
-  const [rawText, ...files] = positional;
+  const [rawInput, ...files] = positional;
+  // 非系统消息一律剥掉手打的系统保留头（「Claude 审查通过 · 可拍板」等）
+  const { text: rawText, stripped } = engine === "review" ? { text: rawInput || "", stripped: false } : stripReservedHeads(rawInput || "");
+  if (stripped) console.error("⚠️ 正文里有系统保留头（审查结论/验收标签），已改成「窗口自述」。");
   if (!sessionCid && !isSystemNotificationText(rawText)) {
-    console.error("⚠️ 未传 --session=<会话ID>：这条消息将记为「未归属」，eru 引用它回复时会交给总控重新判断。");
+    console.error("⚠️ 未传 --session=<会话ID>：这条消息记为「未归属」，声称完成也不会给绿勾。");
   }
-  const gate = await applyProofGate({ text: rawText || "", proofs, files, sessionCid, cwd: cwdFlag, engine, dryRun });
-  // 承诺追踪：只有「验收通过」才算兑现；调研类承诺单独认 research 回执
-  try {
-    const fulfilling = gate.verdict === "accepted" ? gate.results : gate.results.filter((r) => r.kind === "research");
-    const cm = engine === "review" ? { registered: [] } : processOutgoing({ cid: sessionCid, title: sessionTitle, text: rawText || "", results: fulfilling, dryRun });
-    if (cm.registered.length) console.log(`📝 登记承诺 ${cm.registered.map((c) => `${c.id}(${c.dueMin}分钟)`).join("、")}`);
-  } catch (e) {
-    console.error(`承诺登记失败（不影响发送）：${String(e?.message || e)}`);
-  }
-  const bodyWithReceipts = gate.receipts.length
-    ? `${gate.text}\n\n—— 脚本验收回执 ——\n${gate.receipts.join("\n")}`
-    : gate.text;
-  const text = formatWeixinText(bodyWithReceipts);
+  const gate = await applyProofGate({ text: rawText, proofs, files, sessionCid, cwd: cwdFlag, engine, project: ticket?.project || null });
+  // 极简格式：正文原样，只有交付/异常时末尾带一行附注；不再有顶部警告墙和多行回执块
+  const text = formatWeixinText(gate.note ? `${rawText}\n\n${gate.note}` : rawText);
 
   if (!text && files.length === 0) {
     console.error("用法: node weixin-send.mjs <文本内容> [文件路径1 文件路径2 ...] [--session=<cid>]");
     process.exit(1);
   }
   if (dryRun) {
-    console.log(`[dry-run] 不发送、不登记。session=${sessionCid || "unassigned"} files=${files.length}\n----- 将发出的微信正文 -----\n${text}\n----------------------------`);
+    console.log(`[dry-run] 不发送、不登记。session=${sessionCid || "unassigned"} engine=${engine || "agy"} verdict=${gate.verdict} files=${files.length}\n----- 将发出的微信正文 -----\n${text}\n----------------------------`);
+    if (gate.receipts.length) console.log(`🧾 验收回执：\n${gate.receipts.join("\n")}`);
     return;
   }
 
-  let identity = null;
-  if (files.length === 0) {
-    // 60秒内重复文本防重发拦截（防止子窗口传完带caption的附件后又单独重发一遍相同文字）
+  // 60 秒去重：按「会话 + 正文」判重，不同窗口说同一句话不会被吞（审计 P1-3）
+  const self = inferSessionIdentity({ sessionCid, sessionTitle, engine });
+  if (text && files.length === 0) {
     try {
       const map = readJson(MSG_MAP_FILE, { recent: [] });
-      const cleanNorm = (s) => String(s || "").replace(/\s+/g, "").slice(0, 80);
-      const targetNorm = cleanNorm(text);
+      const norm = (x) => String(x || "").replace(/\s+/g, "").slice(0, 80);
       const now = Date.now();
       const dup = (map.recent || [])
-        .slice(0, 6)
-        .find((r) => now - (r.createdAt || 0) < 60000 && r.bodySnippet && cleanNorm(r.bodySnippet) === targetNorm);
+        .slice(0, 12)
+        .find((r) => now - (r.createdAt || 0) < 60000 && r.cid === self.cid && !r.msgId && r.bodySnippet && norm(r.bodySnippet) === norm(text));
       if (dup) {
-        console.log(`⚠️ 已自动拦截 60 秒内重复文本发送 (与刚发送的附件说明完全一致)`);
+        console.log(`⚠️ 同一会话 60 秒内已发过完全相同的正文，本次不重复发送（未落账）`);
         await cancelTypingIfActive(peer);
         return;
       }
     } catch {}
-    const res = await sendMessageWeixin({ to: peer.fromUserId, text, opts });
-    identity = recordMessageSessionMap({
-      messageId: res.messageId,
-      serverMessageId: res.serverMessageId,
-      body: text,
-      sessionCid,
-      sessionTitle,
-      engine,
-    });
-    await cancelTypingIfActive(peer);
-    console.log(`✅ 已发送微信文本消息: messageId=${res.messageId}${res.serverMessageId ? ` svrId=${res.serverMessageId}` : ""}`);
-  } else {
-    for (let i = 0; i < files.length; i++) {
-      const filePath = path.resolve(files[i]);
-      const caption = i === 0 ? text : "";
-      const res = await sendWeixinMediaFile({
-        filePath,
-        to: peer.fromUserId,
-        text: caption,
-        opts,
-        cdnBaseUrl: peer.cdnBaseUrl || CDN_BASE_URL,
-      });
-      identity =
-        recordMessageSessionMap({
-          messageId: res.messageId,
-          serverMessageId: res.serverMessageId,
-          body: caption || `[媒体文件: ${path.basename(filePath)}]`,
-          filePath,
-          sessionCid,
-          sessionTitle,
-          engine,
-        }) || identity;
-      console.log(`✅ 已同时发送微信文本说明与媒体/文件 (${path.basename(filePath)}) [无需再次单独发文本]: messageId=${res.messageId}${res.serverMessageId ? ` svrId=${res.serverMessageId}` : ""}`);
+  }
+
+  let identity = null;
+  try {
+    // 1) 正文永远单独作为文字消息先发：附件（.md/.docx/.pdf/.zip 等）的说明文字在微信里会被吞，只剩 [文件]
+    if (text) {
+      const res = await sendMessageWeixin({ to: peer.fromUserId, text, opts });
+      identity = recordMessageSessionMap({ messageId: res.messageId, serverMessageId: res.serverMessageId, body: text, sessionCid, sessionTitle, engine, filePath: files[0] ? path.resolve(files[0]) : null, system: engine === "review" });
+      console.log(`✅ 已发送微信正文: messageId=${res.messageId}${res.serverMessageId ? ` svrId=${res.serverMessageId}` : ""}`);
     }
+    // 2) 再逐个发附件（不带说明文字）
+    for (const f of files) {
+      const filePath = path.resolve(f);
+      const res = await sendWeixinMediaFile({ filePath, to: peer.fromUserId, text: "", opts, cdnBaseUrl: peer.cdnBaseUrl || CDN_BASE_URL });
+      identity =
+        recordMessageSessionMap({ messageId: res.messageId, serverMessageId: res.serverMessageId, body: `[文件: ${path.basename(filePath)}] ${text.slice(0, 200)}`, filePath, sessionCid, sessionTitle, engine, system: engine === "review" }) || identity;
+      console.log(`✅ 已发送附件 ${path.basename(filePath)}: messageId=${res.messageId}${res.serverMessageId ? ` svrId=${res.serverMessageId}` : ""}`);
+    }
+  } catch (err) {
+    // 发送失败（如 ret=-2）：只记一条 sent:false 的账，绝不核销承诺、不排审查
+    commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, sent: false });
+    throw err;
+  } finally {
     await cancelTypingIfActive(peer);
   }
-  if (identity) {
+  commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, sent: true });
+  if (identity && engine !== "review") {
     recordPendingReply({ cid: identity.cid, title: identity.title, body: rawText || "", filePath: files[0] || null });
   }
   if (gate.receipts.length) console.log(`🧾 验收回执：\n${gate.receipts.join("\n")}`);

@@ -209,9 +209,27 @@ async function runCodex(job) {
   };
 }
 
-function sendWeixin(args) {
+/**
+ * 内部身份票据（替代旧的 --engine= 自报参数）：
+ * job-runner 每发一条系统消息就写一张一次性票据 jobs/tickets/<nonce>.json，通过环境变量 CLAWBOT_JOB_TICKET 交给 weixin-send；
+ * weixin-send 读到后立即删除，并核对 jobs/<jobId>.json 与 delegations.jsonl 里真实的写任务记录。命令行自传 --engine 一律无效。
+ */
+function issueTicket(job, role) {
+  if (!job?.id) return null;
+  const dir = path.join(JOBS_DIR, "tickets");
+  fs.mkdirSync(dir, { recursive: true });
+  const nonce = crypto.randomBytes(16).toString("hex");
+  fs.writeFileSync(path.join(dir, `${nonce}.json`), JSON.stringify({ jobId: job.id, engine: role === "review" ? "review" : job.engine, role, createdAt: Date.now(), pid: process.pid }));
+  return nonce;
+}
+
+function sendWeixin(args, { job = null, role = null } = {}) {
   return new Promise((resolve) => {
-    const c = spawn(process.execPath, [SEND_SCRIPT, ...args], { stdio: "inherit", cwd: CLAWBOT_DIR });
+    const env = { ...process.env };
+    delete env.AGY_ENGINE;
+    const ticket = role ? issueTicket(job, role) : null;
+    if (ticket) env.CLAWBOT_JOB_TICKET = ticket;
+    const c = spawn(process.execPath, [SEND_SCRIPT, ...args.filter((a) => !String(a).startsWith("--engine="))], { stdio: "inherit", cwd: CLAWBOT_DIR, env });
     c.on("close", resolve);
     c.on("error", resolve);
   });
@@ -266,7 +284,15 @@ async function runReview(job) {
   ].join("\n");
   const env = { ...PROXY_ENV, CLAUDE_CONFIG_DIR: "/Users/eru/.claude-cli" };
   const args = ["-p", "--output-format", "json", "--allowedTools", "Read,Glob,Grep", "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"];
-  const r = await runProcess(CLAUDE_BIN, args, { cwd: job.cwd && fs.existsSync(job.cwd) ? job.cwd : HUB_DIR, env, stdin: prompt });
+  // 审查在隔离目录里跑（项目目录用 --add-dir 只读挂进来），这样审查不会在 ~/.claude-cli/projects/<项目> 下留会话，
+  // 不会被 hasEngineEvidence 当成「Claude 在该项目干过活」的证据（审计 P0-3）
+  const reviewCwd = path.join(JOBS_DIR, "review_cwd");
+  fs.mkdirSync(reviewCwd, { recursive: true });
+  const dirs = new Set();
+  if (job.cwd && fs.existsSync(job.cwd)) dirs.add(job.cwd);
+  for (const e of [...(job.evidence || []), ...frames]) if (e.startsWith("/") && fs.existsSync(e)) dirs.add(path.dirname(e));
+  for (const d of dirs) args.push("--add-dir", d);
+  const r = await runProcess(CLAUDE_BIN, args, { cwd: reviewCwd, env, stdin: prompt });
   let parsed = null;
   try {
     parsed = JSON.parse(r.stdout.trim().split("\n").pop());
@@ -286,17 +312,18 @@ async function runReview(job) {
 
 async function handleReviewJob(job) {
   const t0 = Date.now();
-  appendJsonl(DELEGATIONS_FILE, { jobId: job.id, engine: "claude", role: "review", project: job.project, cwd: job.cwd, title: job.title, msgId: job.msgId, status: "started" });
+  appendJsonl(DELEGATIONS_FILE, { jobId: job.id, engine: "claude", role: "review", mode: "review", project: job.project, cwd: job.cwd, title: job.title, msgId: job.msgId, status: "started" });
   const res = await runReview(job);
-  appendJsonl(DELEGATIONS_FILE, { jobId: job.id, engine: "claude", role: "review", project: job.project, sessionId: res.sessionId, status: "finished", verdict: res.verdict, exitCode: res.exitCode, costUsd: res.costUsd, durationMs: Date.now() - t0 });
-  const session = [`--session=${job.agyCid}`, `--title=${job.title}`, `--engine=review`];
+  appendJsonl(DELEGATIONS_FILE, { jobId: job.id, engine: "claude", role: "review", mode: "review", project: job.project, sessionId: res.sessionId, status: "finished", verdict: res.verdict, exitCode: res.exitCode, costUsd: res.costUsd, durationMs: Date.now() - t0 });
+  const session = [`--session=${job.agyCid}`, `--title=${job.title}`];
+  const sys = { job, role: "review" };
   const files = (job.evidence || []).filter((e) => e.startsWith("/") && fs.existsSync(e)).slice(0, 1);
 
   if (!res.ok) {
     updateRouterState((s) => {
       if (s.reviews?.[job.agyCid]) s.reviews[job.agyCid].pendingJob = null;
     });
-    await sendWeixin([`⚠️ [${job.title}] Claude 审查没跑成（exit=${res.exitCode}）：${res.raw.slice(0, 160) || "无输出"}\n这次交付只过了脚本验收，还没有经过 Claude 审查。`, ...session]);
+    await sendWeixin([`⚠️ [${job.title}] Claude 审查没跑成（exit=${res.exitCode}）：${res.raw.slice(0, 160) || "无输出"}\n这次交付只过了脚本验收，还没有经过 Claude 审查。`, ...session], sys);
     return;
   }
 
@@ -319,7 +346,7 @@ async function handleReviewJob(job) {
       const { processOutgoing } = await import("./commitments.mjs");
       processOutgoing({ cid: job.agyCid, title: job.title, text: "", results: [{ kind: "accepted", level: "ok" }] });
     } catch {}
-    await sendWeixin([`✅【Claude 审查通过 · 可拍板】${job.title}\n\n${res.notes || "（无补充意见）"}`, ...files, ...session]);
+    await sendWeixin([`✅【Claude 审查通过 · 可拍板】${job.title}\n\n${res.notes || "（无补充意见）"}`, ...files, ...session], sys);
     return;
   }
 
@@ -339,10 +366,10 @@ async function handleReviewJob(job) {
     await sendWeixin([
       `↩️【Claude 审查未通过 · 已退回重做（${round}/${MAX_REVIEW_ROUNDS}）】${job.title}\n\n${res.notes || ""}${sent.code === 0 ? "" : `\n\n⚠️ 退回窗口失败（exit=${sent.code}），需要你手动转达。`}`,
       ...session,
-    ]);
+    ], sys);
     return;
   }
-  await sendWeixin([`🛑【连续 ${MAX_REVIEW_ROUNDS} 轮审查没过，需要你看】${job.title}\n\n最后一轮意见：\n${res.notes || ""}`, ...files, ...session]);
+  await sendWeixin([`🛑【连续 ${MAX_REVIEW_ROUNDS} 轮审查没过，需要你看】${job.title}\n\n最后一轮意见：\n${res.notes || ""}`, ...files, ...session], sys);
 }
 
 async function main() {
@@ -353,7 +380,7 @@ async function main() {
     try {
       await handleReviewJob(job);
     } catch (e) {
-      await sendWeixin([`❌ [${job.title}] 审查任务崩溃：${String(e).slice(0, 200)}`, `--session=${job.agyCid}`, `--engine=review`]);
+      await sendWeixin([`❌ [${job.title}] 审查任务崩溃：${String(e).slice(0, 200)}`, `--session=${job.agyCid}`], { job, role: "review" });
     } finally {
       releaseReview();
     }
@@ -400,14 +427,13 @@ async function main() {
       ...res.newImages,
       `--session=${res.cid}`,
       `--title=${job.title || label}`,
-      `--engine=${job.engine}`,
       `--cwd=${job.cwd || HUB_DIR}`,
       ...proofs.map((p) => `--proof=${p}`),
-    ]);
+    ], { job, role: "worker" });
     log(`done exit=${res.exitCode} isError=${res.isError}`);
   } catch (e) {
     appendJsonl(DELEGATIONS_FILE, { jobId: job.id, engine: job.engine, project: job.project || null, status: "crashed", error: String(e).slice(0, 300) });
-    await sendWeixin([`❌ [${label} · ${job.title}] 后台任务崩溃：${String(e).slice(0, 200)}`]);
+    await sendWeixin([`❌ [${label} · ${job.title}] 后台任务崩溃：${String(e).slice(0, 200)}`], { job, role: "worker" });
   } finally {
     release();
   }

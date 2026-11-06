@@ -65,33 +65,138 @@ export function listOpenCommitments() {
 }
 
 /**
+ * 评估承诺与当前回执/正文的匹配得分（用于同一窗口多条未结承诺时选出最匹配的一条）
+ */
+function scoreCommitmentMatch(c, text, okResults) {
+  let score = 0;
+  const cText = String(c.text || "").toLowerCase();
+  const msgText = String(text || "").toLowerCase();
+  for (const r of okResults || []) {
+    const base = path.basename(String(r.target || "")).toLowerCase();
+    const stem = base.replace(/\.[^.]+$/, "");
+    if (base && cText.includes(base)) score += 10;
+    else if (stem && stem.length >= 3 && cText.includes(stem)) score += 6;
+  }
+  const tokens = cText.match(/[\u4e00-\u9fa5]{2,6}|[a-z0-9_-]{3,}/gi) || [];
+  for (const tok of tokens) {
+    if (/^(马上|立刻|立即|现在|这就|随后|稍后|接下来|正在|继续|分钟|小时)$/.test(tok)) continue;
+    if (msgText.includes(tok)) score += 2;
+  }
+  return score;
+}
+
+/**
+ * 在 db.items 上执行承诺核销（内部可变操作）：
+ * 1. 若显式指定 commitmentId（支持逗号分隔多个 id），仅精确核销对应 id；
+ * 2. 若显式指定 taskId，仅核销绑定了该 taskId 的承诺（若同 taskId 下有多条，优先匹配度最高或最新的一条）；
+ * 3. 若未指定 commitmentId / taskId，优先核销目标路径/关键词匹配度最高的 1 条，否则仅核销该窗口最新 1 条匹配的 open 承诺，绝不清空整个窗口全部不相关承诺。
+ */
+function settleInDb(db, { cid, commitmentId = null, taskId = null, preferTaskId = null, text = "", results = [], messageId = null, now = Date.now() }) {
+  const fulfilled = [];
+  db.items = db.items || {};
+  const okResults = (results || []).filter((r) => r.level === "ok");
+  const okKinds = new Set(okResults.map((r) => r.kind));
+  if (okKinds.size === 0) return fulfilled;
+
+  const explicitIds = commitmentId
+    ? new Set(
+        String(commitmentId)
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      )
+    : null;
+
+  const candidates = Object.values(db.items).filter((c) => {
+    if (!c || c.status !== "open") return false;
+    if (c.needsResearch && !okKinds.has("research")) return false;
+    if (explicitIds && explicitIds.size > 0) {
+      return explicitIds.has(c.id) && (!cid || cid === "unassigned" || c.cid === cid);
+    }
+    if (!cid || cid === "unassigned" || c.cid !== cid) return false;
+    if (taskId) return c.taskId === taskId;
+    return true;
+  });
+
+  if (candidates.length === 0) return fulfilled;
+
+  let toFulfill = [];
+  if (explicitIds && explicitIds.size > 0) {
+    toFulfill = candidates;
+  } else {
+    // 按匹配得分优先，其次按创建时间最新排序，每次回执只核销最相关的 1 条承诺
+    // 服务端的当前任务（lastDispatch[cid].msgId）优先：交付物 A 不去核销别的任务的承诺 B
+    candidates.sort((a, b) => {
+      if (preferTaskId) {
+        const ta = a.taskId === preferTaskId ? 1 : 0;
+        const tb = b.taskId === preferTaskId ? 1 : 0;
+        if (tb !== ta) return tb - ta;
+      }
+      const sa = scoreCommitmentMatch(a, text, okResults);
+      const sb = scoreCommitmentMatch(b, text, okResults);
+      if (sb !== sa) return sb - sa;
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+    toFulfill = [candidates[0]];
+  }
+
+  const targets = okResults.map((r) => r.target).filter(Boolean);
+  for (const c of toFulfill) {
+    c.status = "fulfilled";
+    c.fulfilledAt = now;
+    c.fulfilledBy = [...okKinds].join("+");
+    if (taskId || c.taskId) c.fulfilledTaskId = taskId || c.taskId || null;
+    if (messageId) c.fulfilledMessageId = messageId;
+    if (targets.length) c.fulfilledTargets = targets;
+    fulfilled.push(c);
+  }
+  return fulfilled;
+}
+
+/**
+ * 独立精确核销接口：支持按 commitmentId 或 taskId（或窗口最新匹配项）核销承诺
+ */
+export function settleCommitments({ cid, commitmentId = null, taskId = null, text = "", results = [], messageId = null, dryRun = false }) {
+  let fulfilled = [];
+  const now = Date.now();
+  const apply = (db) => {
+    fulfilled = settleInDb(db, { cid, commitmentId, taskId, text, results, messageId, now });
+    return db;
+  };
+  if (dryRun) apply(structuredClone(load()));
+  else updateJson(COMMITMENTS_FILE, { items: {} }, apply);
+  return fulfilled;
+}
+
+/**
  * 先兑现旧承诺，再登记新承诺（同一条消息里的回执不会兑现它自己新许下的承诺）。
  * results: proof.runProof 的结果数组
  */
-export function processOutgoing({ cid, title, text, results, dryRun = false }) {
+export function processOutgoing({ cid, title, text, results = [], commitmentId = null, taskId = null, messageId = null, dryRun = false }) {
   const report = { fulfilled: [], registered: [] };
   if (!cid || cid === "unassigned") return report;
   // 只有 AGY 执行窗口的承诺才登记：总控窗口和 Claude/Codex 后台结果（claude:xx）说「接下来我会…」时任务已结束，登记了只会白催
   const canRegister = UUID_RE.test(cid) && !routerCidSet().has(cid);
-  const okKinds = new Set(results.filter((r) => r.level === "ok").map((r) => r.kind));
   const promises = detectPromises(text);
   const now = Date.now();
+  const routerSt = loadRouterState();
+  const activeTaskId = taskId || routerSt.lastDispatch?.[cid]?.msgId || null;
 
   const apply = (db) => {
     db.items = db.items || {};
-    if (okKinds.size) {
-      for (const c of Object.values(db.items)) {
-        if (c.cid !== cid || c.status !== "open") continue;
-        if (c.needsResearch && !okKinds.has("research")) continue;
-        c.status = "fulfilled";
-        c.fulfilledAt = now;
-        c.fulfilledBy = [...okKinds].join("+");
-        report.fulfilled.push(c);
-      }
-    }
+    report.fulfilled = settleInDb(db, {
+      cid,
+      commitmentId,
+      taskId,
+      preferTaskId: activeTaskId,
+      text,
+      results,
+      messageId,
+      now,
+    });
     // 被催过还没兑现、且催办之后 eru 没给这个窗口派过新消息 → 不再登记新承诺（防「催办 → 我马上补 → 再催」死循环）
     // eru 派了新任务（lastDispatch 晚于催办）就照常登记
-    const lastDispatchAt = loadRouterState().lastDispatch?.[cid]?.at || 0;
+    const lastDispatchAt = routerSt.lastDispatch?.[cid]?.at || 0;
     const nudgedOpen = Object.values(db.items).some((c) => c.cid === cid && c.status === "open" && c.remindedAt && c.remindedAt > lastDispatchAt);
     for (const p of canRegister && !nudgedOpen ? promises : []) {
       const dup = Object.values(db.items).find((c) => c.cid === cid && c.status === "open" && c.text === p.text);
@@ -100,6 +205,7 @@ export function processOutgoing({ cid, title, text, results, dryRun = false }) {
       const item = {
         id,
         cid,
+        taskId: activeTaskId,
         title: title || cid.slice(0, 8),
         text: p.text,
         needsResearch: p.needsResearch,

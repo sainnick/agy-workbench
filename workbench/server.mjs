@@ -391,21 +391,30 @@ function parseWechat() {
       });
     }
   }
-  // 推断去向：消息之后 6 分钟内第一个非路由窗口的投递
+  // 去向：直接读原话存档 inbox/msgs/*.json 里的 routes[]（bridge/agy-route 投递时精确写入），不再按时间窗口猜
   const sends = events
     .filter((e) => e.action === "send-message" || e.action === "new-conversation")
     .map((e) => ({ t: Date.parse(e.ts), target: e.target, router: routers.has(e.target), action: e.action }));
+  const archives = loadMsgArchives();
+  const used = new Set();
   for (const msg of msgs) {
     const t0 = Date.parse(msg.at);
-    msg.viaRouter = fwdTimes.some((t) => t >= t0 && t <= t0 + 30_000);
-    const direct = directs.find((d) => d.t >= t0 && d.t <= t0 + 30_000);
-    if (direct) {
-      msg.direct = direct.via;
-      msg.routedTo = direct.target;
+    const norm = (x) => String(x || "").replace(/\s+/g, "");
+    const rec = archives.find((a) => !used.has(a.id) && Math.abs((a.receivedAt || Date.parse(a.createdAt)) - t0) <= 15_000 && norm(a.text).slice(0, 200) === norm(msg.text).slice(0, 200));
+    if (!rec) {
+      msg.routedTo = null; // 没有存档（斜杠指令、被意图处理吃掉的话等）就不显示去向，绝不猜
       continue;
     }
-    const hit = sends.find((s) => !s.router && s.t >= t0 && s.t <= t0 + 360_000);
-    msg.routedTo = hit ? hit.target : null;
+    used.add(rec.id);
+    msg.msgId = rec.id;
+    const last = (rec.routes || []).at(-1);
+    if (!last) {
+      msg.routedTo = null;
+      continue;
+    }
+    msg.viaRouter = (rec.routes || []).some((r) => r.routeKey === "router" || r.to === "router");
+    msg.direct = last.via || null;
+    msg.routedTo = last.engine === "claude" ? `claude:${String(last.target || last.routeKey || "").replace(/^claude:/, "")}` : last.engine === "codex" ? `codex:${last.target}` : last.target || null;
   }
   // 重复投递：同一窗口 5 分钟内被投递 ≥3 次
   const bursts = {};
@@ -462,10 +471,28 @@ function portOpen(port, host = "127.0.0.1", timeout = 700) {
   });
 }
 
+/** 最近 400 条原话存档（按文件修改时间） */
+function loadMsgArchives(limit = 400) {
+  const dir = path.join(CLAWBOT, "inbox", "msgs");
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }));
+  } catch {
+    return [];
+  }
+  return files
+    .sort((a, b) => b.t - a.t)
+    .slice(0, limit)
+    .map(({ f }) => readJson(path.join(dir, f), null))
+    .filter(Boolean);
+}
+
 async function health() {
   let bridgePid = null;
+  let bridgePids = [];
   try {
-    bridgePid = execFileSync("/usr/bin/pgrep", ["-f", "clawbot/bridge.mjs"], { encoding: "utf8" }).trim().split("\n")[0] || null;
+    bridgePids = execFileSync("/usr/bin/pgrep", ["-f", "^[^ ]*node [^ ]*/clawbot/bridge\\.mjs"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    bridgePid = bridgePids[0] || null;
   } catch {}
   let diskFreeGB = null;
   let diskPct = null;
@@ -476,7 +503,7 @@ async function health() {
   } catch {}
   const [proxy, ollama, portal] = await Promise.all([portOpen(7897), portOpen(11434), portOpen(4318)]);
   return {
-    bridge: { ok: Boolean(bridgePid), pid: bridgePid },
+    bridge: { ok: bridgePids.length === 1, pid: bridgePid, count: bridgePids.length },
     proxy: { ok: proxy, label: "mihomo 7897" },
     ollama: { ok: ollama, label: "Ollama 11434" },
     portal: { ok: portal, label: "Task Portal 4318" },
@@ -737,14 +764,21 @@ async function buildState() {
     spend,
     days,
     models: (() => {
-      // 近 30 天按模型：AGY 记录里没有模型名，统一记为 Gemini Argon，再按干活 / 总控拆开
+      // 近 30 天按模型：记录里没有模型名的一律归 Unknown，不再默认算进 Gemini Argon
       const since30 = now - 30 * 86400_000;
       const m = {};
       const add = (k, v) => (m[k] = (m[k] || 0) + v);
-      for (const x of agy) add(x.isRouter ? "Gemini Argon · 总控转发" : "Gemini Argon · 干活", sumWindow([x], since30));
+      for (const x of agy) {
+        const mn = x.model ? String(x.model) : "Unknown（AGY 未记录模型）";
+        add(`${mn} · ${x.isRouter ? "总控转发" : "干活"}`, sumWindow([x], since30));
+      }
       for (const x of claude) {
         if (/synthetic/.test(String(x.model || ""))) continue;
-        const name = String(x.model || "claude").replace(/^claude-/, "").replace(/-(\d+)-(\d+).*$/, " $1.$2").replace(/^./, (c) => c.toUpperCase());
+        if (!x.model) {
+          add("Unknown", sumWindow([x], since30));
+          continue;
+        }
+        const name = String(x.model).replace(/^claude-/, "").replace(/-(\d+)-(\d+).*$/, " $1.$2").replace(/^./, (c) => c.toUpperCase());
         add(`Claude ${name}`, sumWindow([x], since30));
       }
       return Object.entries(m).filter(([, v]) => v > 0).map(([name, tokens]) => ({ name, tokens })).sort((a, b) => b.tokens - a.tokens);
@@ -796,8 +830,8 @@ async function sendToWindow(projectId, text) {
   const rules = core.loadRules();
   const route = rules.routes?.[projectId];
   if (!route) throw new Error("这个项目还没有对应的窗口");
+  // 不再改写 lastInboundMsgId：微信里的「发给 X」改投只针对微信消息，两个渠道状态不混（审计 P2-5）
   const msgId = core.saveInboundMsg({ text: t, media: [], mediaFiles: [], source: "workbench" });
-  core.saveRouterState({ lastInboundMsgId: msgId });
   const { routeMessage } = await import(path.join(CLAWBOT, "agy-route.mjs"));
   const r = await routeMessage({ msgId, to: projectId, via: "工作台" });
   fs.appendFileSync(path.join(CLAWBOT, "bridge.log"), `[${new Date().toISOString()}] [AGY-ClawBot-V3] Direct-routed msg=${msgId} via 工作台 → ${projectId} (${r.engine})\n`);
@@ -856,9 +890,13 @@ function readBody(req) {
   });
 }
 
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   try {
+    // Host 白名单：防 DNS rebinding 让外部网页读走 /api/state（审计 P3）
+    const host = String(req.headers.host || "").toLowerCase();
+    if (!ALLOWED_HOSTS.has(host)) return send(res, 403, { error: "forbidden host" });
     // 只接受本机来源，防止别的网页跨站调用写接口
     const origin = req.headers.origin;
     if (req.method !== "GET" && origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {

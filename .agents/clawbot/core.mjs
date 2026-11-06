@@ -135,11 +135,11 @@ export function loadInboundMsg(id) {
   }
 }
 
+/** 加锁读改写：bridge 与总控调用的 agy-route 可能同时追加 routes，不能互相覆盖（审计 P2-2） */
 export function markInboundMsg(id, patch) {
   const rec = loadInboundMsg(id);
   if (!rec) return;
-  const next = { ...rec, ...patch, routes: [...(rec.routes || []), ...(patch.routes || [])] };
-  fs.writeFileSync(path.join(MSG_STORE_DIR, `${rec.id}.json`), JSON.stringify(next, null, 2));
+  updateJson(path.join(MSG_STORE_DIR, `${rec.id}.json`), rec, (cur) => ({ ...cur, ...patch, routes: [...(cur.routes || []), ...(patch.routes || [])] }));
 }
 
 /** 把存档的消息还原成逐字文本（原话 + 引用 + 附件路径），不经任何 LLM */

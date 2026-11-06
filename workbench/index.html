@@ -289,7 +289,7 @@ function decisions(){
 
 function renderChrome(){
   const h=S.health;
-  const rows=[['微信桥',h.bridge.ok?'g':'r'],['代理 7897',h.proxy.ok?'g':'r'],['Ollama',h.ollama.ok?'g':''],[`磁盘 ${h.disk.freeGB?Math.round(h.disk.freeGB)+' GB':''}`,h.disk.freeGB>40?'g':'o'],[`内存 ${h.memFreeGB.toFixed(1)} GB`,h.memFreeGB>0.5?'g':'o']];
+  const rows=[[h.bridge.count>1?`微信桥 ×${h.bridge.count}（重复）`:'微信桥',h.bridge.ok?'g':'r'],['代理 7897',h.proxy.ok?'g':'r'],['Ollama',h.ollama.ok?'g':''],[`磁盘 ${h.disk.freeGB?Math.round(h.disk.freeGB)+' GB':''}`,h.disk.freeGB>40?'g':'o'],[`内存 ${h.memFreeGB.toFixed(1)} GB`,h.memFreeGB>0.5?'g':'o']];
   $('#health').innerHTML=rows.map(([k,c])=>`<div><span class="dot ${c}"></span>${esc(k)}</div>`).join('');
   const dn=decisions().length;
   $('#cDecide').textContent=dn||''; $('#cProj').textContent=S.projects.filter(p=>!['idle','stopped'].includes(p.status)).length;

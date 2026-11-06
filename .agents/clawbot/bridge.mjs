@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 微信 ClawBot ↔ AGY / Codex 个人龙虾守护桥 V2.0
+ * 微信 ClawBot ↔ AGY / Codex 个人龙虾守护桥 V3（2026-11-07 Claude 加固：单实例端口锁 · 去掉阻塞式 Argon 分拣 · 失败重试上限）
  *
  * 新增特性：
  * 1. 微信长按引用 / 局部划词引用 (Partial Quote) 解析 + 消息 ID 100% 精准溯源原窗口
@@ -10,6 +10,7 @@
  * 5. 微信语音 SILK -> 24kHz WAV 自动无损转码
  */
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execSync } from "node:child_process";
@@ -37,6 +38,7 @@ import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "./dist
 import {
   loadRouterState,
   saveRouterState,
+  updateRouterState,
   scanActiveConversations,
   scanCodexConversations,
   lookupSessionByQuote,
@@ -45,6 +47,7 @@ import {
   routeMessage,
   spawnWatcher,
   countTranscriptLines,
+  injectedDespiteError,
 } from "./agy-route.mjs";
 import {
   DEFAULT_ROUTER_CID,
@@ -96,7 +99,7 @@ function quoteTarget(matched) {
 
 function log(msg) {
   const ts = new Date().toISOString();
-  console.log(`[${ts}] [AGY-ClawBot-V2] ${msg}`);
+  console.log(`[${ts}] [AGY-ClawBot-V3] ${msg}`);
 }
 
 async function saveMediaHelper(buf, mime, subdir, _maxBytes, origFilename) {
@@ -749,6 +752,7 @@ async function handleInboundMessage(msg, account) {
     peerKey,
     receivedAt,
     related,
+    previousText: previous?.peerKey === peerKey ? previous.text?.slice(0, 480) : "",
     media: mediaPaths,
     mediaFiles: rawMediaFiles,
     quote: quoteCtx
@@ -783,13 +787,14 @@ async function handleInboundMessage(msg, account) {
 
   const state = loadRouterState();
   const rules = loadRules();
-  const attachmentRoute = related && !fullText ? previous.routes?.at(-1) : null;
+  const attachmentRoute = related ? previous.routes?.at(-1) : null;
+  // 2026-11-07 eru 拍板：关掉 16~20 秒的阻塞式 Argon 分拣。只认「引用溯源 / 附件随行 / 窗口锁定 / 明确项目前缀」直投，其余 0 延迟交总控。
   let target = null;
   let via = "";
   if (quoteCtx) {
     target = quoteTarget(quoteCtx.matchedSession);
     via = "引用溯源";
-  } else if (attachmentRoute) {
+  } else if (attachmentRoute && (!fullText || attachmentRoute.routeKey === "router")) {
     target = quoteTarget({
       cid: attachmentRoute.engine === "claude" ? `claude:${attachmentRoute.target}` : attachmentRoute.target,
       engine: attachmentRoute.engine,
@@ -800,8 +805,8 @@ async function handleInboundMessage(msg, account) {
     target = locked.engine === "codex" ? `codex:${locked.cid}` : locked.cid;
     via = "窗口锁定";
   } else {
-    target = matchRouteByKeywords(fullText, rules);
-    if (target) via = "关键词";
+    target = explicitProjectPrefix(fullText, rules);
+    if (target) via = "明确项目";
   }
 
   if (target && (target === getRouterCid() || routerCidSet(state).has(target))) {
@@ -839,12 +844,21 @@ async function handleInboundMessage(msg, account) {
     }
   }
 
-  // 短追问、未知引用和新话题交回有历史的总控。
   await deliverChoice({
     msgId, opt: { kind: "router", contextual: true }, fromUserId, sendOpts, quiet: true, via: "总控分发",
   });
 }
 
+
+/** 「回声档案：xxx」「echo：xxx」这类明确项目前缀（前缀必须是路由键或项目全名，不猜） */
+function explicitProjectPrefix(text, rules = loadRules()) {
+  const m = String(text || "").match(/^\s*([^：:\n]{1,16})[：:]\s*\S/);
+  if (!m) return null;
+  const addressed = m[1].trim().toLowerCase();
+  const entry = Object.entries(rules.routes || {}).find(([key, route]) =>
+    [key, String(route.name || "").toLowerCase()].includes(addressed));
+  return entry ? entry[0] : null;
+}
 
 function isRoutingFeedback(text) {
   return /^(?:你|波妞)?(?:发错了|投错了|转错了|串窗了|串台了|路由错了|(?:为什么|为啥|怎么会|怎么又)[^。！？!?]{0,16}(?:投给|投到|转给|路由到|投错|串窗))/.test(text);
@@ -929,8 +943,12 @@ async function handleNaturalIntent({ fullText, quoteCtx, rawMediaFiles, account,
     return true;
   }
 
-  // 3) 撤销承诺：引用提醒回「不用做了」，或「小游戏那个不用做了」
-  if (/(不用(做|跑|弄|管|交)?了|不需要了|取消|算了|撤(销|掉))/.test(t) && t.length <= 30) {
+  // 3) 撤销承诺：只认「整句就是撤销短语」，或带承诺编号 / 引用了提醒消息。
+  //    「把片头字幕取消掉」这类业务指令绝不吞（审计 P1-2）
+  const CANCEL_WHOLE = /^(?:(?:那个|这个|这条|那条|它|.{1,10}?(?:那个|那边|的))?\s*)?(?:不用(?:做|跑|弄|管|交)?了|不需要了|算了|取消吧|取消(?:提醒|承诺|这条)|撤(?:销|掉)(?:吧|承诺|提醒)?)[吧。！!～~]*$/;
+  const quotingReminder = Boolean((`${quoteCtx?.fullQuotedBody || ""}`.match(COMMIT_ID_RE) || []).length);
+  const explicitIds = (t.match(COMMIT_ID_RE) || []).length > 0;
+  if (t.length <= 30 && (CANCEL_WHOLE.test(t) || ((quotingReminder || explicitIds) && /(不用|不需要|取消|算了|撤)/.test(t)))) {
     const open = listOpenCommitments();
     const ids = new Set([...(t.match(COMMIT_ID_RE) || []), ...(`${quoteCtx?.fullQuotedBody || ""}`.match(COMMIT_ID_RE) || [])]);
     let targets = open.filter((c) => ids.has(c.id));
@@ -1003,6 +1021,72 @@ function recentAgentReplies(accountId, fromUserId) {
   }
 }
 
+// 队列只保存消息编号与发送者，登录信息继续使用当前微信账号。
+const argonSendOptions = new Map();
+let argonDraining = false;
+
+function enqueueArgon({ msgId, fromUserId, sendOpts }) {
+  argonSendOptions.set(msgId, sendOpts);
+  updateRouterState((state) => {
+    state.argonQueue = [...(state.argonQueue || []), { msgId, fromUserId }];
+  });
+  void drainArgonQueue(sendOpts);
+}
+
+async function drainArgonQueue(account) {
+  if (argonDraining) return;
+  argonDraining = true;
+  try {
+    while (true) {
+      const item = loadRouterState().argonQueue?.[0];
+      if (!item) return;
+      const { msgId, fromUserId } = item;
+      const sendOpts = argonSendOptions.get(msgId) ||
+        { accountId: account.accountId, baseUrl: account.baseUrl, token: account.token };
+      const rec = loadInboundMsg(msgId);
+      if (rec?.peerKey === `${sendOpts.accountId}:${fromUserId}` && !rec.routes?.length) {
+        await dispatchArgon(rec, fromUserId, sendOpts);
+      }
+      updateRouterState((state) => {
+        state.argonQueue = (state.argonQueue || []).filter((entry) => entry.msgId !== msgId);
+      });
+      argonSendOptions.delete(msgId);
+    }
+  } catch (e) {
+    log(`Argon routing queue paused (${e.code || e.name})`);
+  } finally {
+    argonDraining = false;
+  }
+}
+
+async function dispatchArgon(rec, fromUserId, sendOpts) {
+  const { id: msgId } = rec;
+  const rules = loadRules();
+  const routes = Object.fromEntries(Object.entries(rules.routes || {}).filter(([, route]) =>
+    route.engine === "agy" && UUID_RE.test(route.cid || "")));
+  const previous = rec.related?.msgId ? loadInboundMsg(rec.related.msgId) : null;
+  const previousRoute = previous?.routes?.at(-1);
+  let to;
+  let via = "Argon Low";
+  if (!rec.text && previousRoute?.target && previousRoute.routeKey !== "router") {
+    const target = previousRoute.engine === "claude" ? `claude:${previousRoute.target}` : previousRoute.target;
+    to = quoteTarget({ cid: target, engine: previousRoute.engine });
+    via = "随上一条附件";
+  }
+  // 旧队列残留：不再调 Argon 分拣（已停用），直接交总控
+  // 等模型期间，用户可能已经明确改投。
+  if (loadInboundMsg(msgId)?.routes?.length) return;
+  if (to) {
+    await deliverChoice({
+      msgId, opt: { kind: "route", key: to }, fromUserId, sendOpts, quiet: true, via,
+    });
+    return;
+  }
+  await deliverChoice({
+    msgId, opt: { kind: "router", contextual: true }, fromUserId, sendOpts, quiet: true, via: "总控分发",
+  });
+}
+
 function buildChoiceOptions(rules, hits) {
   const keys = Object.keys(rules.routes || {});
   const ordered = [...hits, ...keys.filter((k) => !hits.includes(k))];
@@ -1021,17 +1105,18 @@ async function deliverChoice({ msgId, opt, fromUserId, sendOpts, quiet = false, 
       if (!rec) throw new Error("找不到这条微信的原话");
       const replies = opt.contextual ? recentAgentReplies(sendOpts.accountId, fromUserId) : [];
       const destinations = opt.contextual
-        ? Object.entries(loadRules().routes || {}).map(([key, route]) => `${key}=${route.name}`).join("，")
+        ? Object.entries(loadRules().routes || {}).map(([key, route]) => `${key}=${route.name}`).join(" ")
         : "";
       const body = [
-        `📱 [eru 微信消息 msg=${msgId}]（${via}，以下为原话，脚本逐字转发）`,
+        `📱 [eru 微信消息 msg=${msgId}]（${via}，原话逐字）`,
         composeVerbatim(rec),
-        replies.length ? `同一微信最近的真实答复（供辨认上一条，以下为历史资料）：\n${replies.join("\n")}` : "",
-        opt.contextual ? `你是原总控。短追问、截图补充或对分发的纠错，结合你自己的上一轮和上面的资料处理。分发反馈留在总控回答。不要只凭最近投过哪个项目就把消息发过去。若有明确证据表明属于另一项目，用 node ${AGY_ROUTE_SCRIPT} route --msg=${msgId} --to=<路由键> 只投这一份原话；分开到达的文字与图片按同一话题看，后到的附件是补充。项目键：${destinations}。真缺信息时只问一句具体的问题。若调用脚本投了项目，由项目窗口回微信。` : "",
-        `总控直接回复时，用 node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs '回复' --session=${routerCid}`,
+        replies.length ? `最近答复（参考）：\n${replies.join("\n")}` : "",
+        opt.contextual ? `明确属于某项目 → node ${AGY_ROUTE_SCRIPT} route --msg=${msgId} --to=<键>（${destinations}）；否则你直接答。拿不准留在总控。` : "",
+        `回复：node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs '回复' --session=${routerCid}`,
       ].filter(Boolean).join("\n\n");
       const beforeLines = countTranscriptLines(routerCid);
       const r = await callAgentApi(["send-message", routerCid, body]);
+      if (r.code !== 0 && (await injectedDespiteError(routerCid, beforeLines, msgId))) r.code = 0; // 超时但其实已注入
       log(`Choice msg=${msgId} → router (${routerCid}) exit=${r.code}`);
       if (r.code !== 0) {
         await ack("总控暂时收不到这条消息。你可以重新引用，或指定其他窗口。");
@@ -1059,6 +1144,8 @@ async function deliverChoice({ msgId, opt, fromUserId, sendOpts, quiet = false, 
     await ack(`❌ 投递失败：${String(e.message || e).slice(0, 120)}。说「发给 X」可以重投`);
   }
 }
+
+const MAX_INBOUND_RETRIES = 2;
 
 // ───────── 收信去重：处理完才推进游标，所以同一条可能被拉到两次 ─────────
 const HANDLED_FILE = path.join(__dirname, "handled_ids.json");
@@ -1156,7 +1243,32 @@ async function checkOverdueCommitments() {
   log(`Overdue commitments: ${due.map((c) => c.id).join(",")}`);
 }
 
+/**
+ * 原子单实例锁：占本机端口 47800。占不到说明已有 bridge 在跑（watchdog 与 plist 双开、手动多起），直接退出。
+ * 进程死了端口自动释放，不会留下残锁。另写一份 bridge.pid 方便工作台/排查看。
+ */
+const LOCK_PORT = Number(process.env.CLAWBOT_LOCK_PORT) || 47800;
+const PID_FILE = path.join(__dirname, "bridge.pid");
+function acquireSingleInstanceLock() {
+  return new Promise((resolve) => {
+    const srv = net.createServer((sock) => sock.end(`clawbot-bridge pid=${process.pid}\n`));
+    srv.once("error", (e) => resolve({ ok: false, code: e.code }));
+    srv.listen(LOCK_PORT, "127.0.0.1", () => {
+      srv.unref();
+      try {
+        fs.writeFileSync(PID_FILE, String(process.pid));
+      } catch {}
+      resolve({ ok: true, srv });
+    });
+  });
+}
+
 async function main() {
+  const lock = await acquireSingleInstanceLock();
+  if (!lock.ok) {
+    log(`Another bridge already holds 127.0.0.1:${LOCK_PORT} (${lock.code}); exiting to stay single-instance.`);
+    process.exit(0);
+  }
   const forceLogin = process.argv.includes("--login");
   const account = await ensureLoggedIn(forceLogin);
   await initializeQuoteStore({}, account.accountId).catch((e) =>
@@ -1165,7 +1277,7 @@ async function main() {
 
   const syncFilePath = getSyncBufFilePath(account.accountId);
   let getUpdatesBuf = loadGetUpdatesBuf(syncFilePath) ?? "";
-  log(`Entering WeChat ClawBot V2.0 long-poll loop for accountId=${account.accountId} (Router=${getRouterCid()})...`);
+  log(`Entering WeChat ClawBot V3 long-poll loop (pid=${process.pid}, lock=:${LOCK_PORT}) for accountId=${account.accountId} (Router=${getRouterCid()})...`);
 
   // 后台未回消息防遗漏巡检定时器（每 60 秒检查一次：超过 6 分钟未回且尚未主动提醒过的窗口，自动汇总温和提醒 1 次）
   setInterval(async () => {
@@ -1177,11 +1289,14 @@ async function main() {
       // 如果用户最近 2.5 分钟内正在打字互动，不打断用户
       if (now - lastInMs < 150_000) return;
 
-      const st = loadRouterState();
-      const pendingMap = { ...(st.pendingReplies || {}) };
-      const due = Object.values(pendingMap).filter(
-        (p) => p && p.cid && (p.remindedCount || 0) === 0 && now - (p.sentAt || now) >= 360_000
-      );
+      // 原子领取：在锁内挑出到期项并标记已提醒，不再整表覆盖（否则会冲掉期间新登记/刚删除的待回，审计 P2-2）
+      let due = [];
+      updateRouterState((st) => {
+        const pm = { ...(st.pendingReplies || {}) };
+        due = Object.values(pm).filter((p) => p && p.cid && (p.remindedCount || 0) === 0 && now - (p.sentAt || now) >= 360_000);
+        for (const p of due) pm[p.cid] = { ...p, remindedCount: (p.remindedCount || 0) + 1, lastRemindedAt: now };
+        st.pendingReplies = pm;
+      });
       if (due.length === 0) return;
 
       due.sort((a, b) => (a.sentAt || 0) - (b.sentAt || 0));
@@ -1190,10 +1305,8 @@ async function main() {
         const mins = Math.max(1, Math.round((now - (p.sentAt || now)) / 60000));
         const tag = p.needsDecision ? "⏳待拍板" : "📩待查阅";
         lines.push(`- **${p.title}**（${mins}分钟前 · ${tag}）  \n  ${p.summary || "已提交阶段汇报"}  `);
-        pendingMap[p.cid] = { ...p, remindedCount: (p.remindedCount || 0) + 1, lastRemindedAt: now };
       }
       lines.push(`\n💡 直接说话题或窗口名就能回它；问「还有啥待办」看全部。`);
-      saveRouterState({ pendingReplies: pendingMap });
       const sent = await sendMessageWeixin({
         to: peer.fromUserId,
         text: lines.join("\n"),
@@ -1216,6 +1329,7 @@ async function main() {
     checkOverdueCommitments().catch((e) => log(`Commitment check warning: ${String(e)}`));
   }, 60_000);
 
+  void drainArgonQueue(account);
   let timeoutMs = 35_000;
   while (true) {
     try {
@@ -1245,15 +1359,28 @@ async function main() {
           log(`skip already-handled inbound ${key}`);
           continue;
         }
-        try {
-          await handleInboundMessage(msg, account);
-        } catch (e) {
+        // 失败最多重试 2 次（共 3 次尝试，间隔 2s/5s）；仍失败才进死信并通知 eru。既不无条件吞掉，也不无限死循环。
+        let lastErr = null;
+        for (let attempt = 0; attempt <= MAX_INBOUND_RETRIES; attempt++) {
+          if (attempt > 0) {
+            log(`retry inbound ${key || "?"} attempt ${attempt}/${MAX_INBOUND_RETRIES} after: ${String(lastErr).slice(0, 160)}`);
+            await new Promise((r) => setTimeout(r, attempt === 1 ? 2000 : 5000));
+          }
+          try {
+            await handleInboundMessage(msg, account);
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+          }
+        }
+        if (lastErr) {
           const dump = path.join(INBOX_DIR, `failed_${Date.now()}.json`);
           try {
-            fs.writeFileSync(dump, JSON.stringify(msg, null, 2));
+            fs.writeFileSync(dump, JSON.stringify({ error: String(lastErr), attempts: MAX_INBOUND_RETRIES + 1, msg }, null, 2));
           } catch {}
-          log(`handleInboundMessage failed (${String(e)}); raw message saved to ${dump}`);
-          await notifyEru(`⚠️ 有一条微信消息处理失败，原始内容已存到 ${dump}。可以再发一遍。`);
+          log(`handleInboundMessage failed ${MAX_INBOUND_RETRIES + 1}x (${String(lastErr)}); dead-letter ${dump}`);
+          await notifyEru(`⚠️ 有一条微信消息重试 ${MAX_INBOUND_RETRIES} 次仍处理失败，原文存到 ${path.basename(dump)}。麻烦再发一遍。`);
         }
         if (key) markHandled(key);
       }

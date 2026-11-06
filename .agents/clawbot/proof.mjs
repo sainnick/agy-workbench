@@ -281,7 +281,8 @@ export async function hasEngineEvidence(engine, hours = 6, cwd = null) {
   const inScope = (dir) => !cwd || (dir && (dir === cwd || dir.startsWith(`${cwd}/`)));
   const scopeLabel = cwd ? `（限 ${path.basename(cwd)} 目录）` : "（全局，未限定项目）";
   const ledgerHit = readJsonlTail(DELEGATIONS_FILE, 500).some(
-    (d) => d.engine === engine && !d.test && new Date(d.ts).getTime() >= since && inScope(d.cwd)
+    // 只读审查（role/mode = review）不算「该引擎在项目里干过活」，否则审一次就能洗白 6 小时（审计 P0-3）
+    (d) => d.engine === engine && !d.test && d.role !== "review" && d.mode !== "review" && new Date(d.ts).getTime() >= since && inScope(d.cwd)
   );
   if (ledgerHit) return { ok: true, source: `delegations.jsonl${scopeLabel}` };
   if (engine === "claude" && fs.existsSync(CLAUDE_CLI_PROJECTS)) {

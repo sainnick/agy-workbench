@@ -253,6 +253,7 @@ export async function notifyWeixin(text, sessionMeta = null) {
         sessionTitle: sessionMeta.title,
         engine: sessionMeta.engine || "agy",
         msgId: sessionMeta.msgId || null,
+        system: true,
       });
     }
     return res;
@@ -471,8 +472,11 @@ function countPlannerSteps(cid) {
 function buildWrappedTaskPrompt(body, sessionLabel, sessionCid, { msgId = "", verbatim = true, routeKey = null } = {}) {
   const sessionFlag = sessionCid ? ` --session=${sessionCid}` : "";
   const titleFlag = sessionLabel ? ` --title="${sessionLabel.replace(/"/g, "")}"` : "";
+  const fromWorkbench = msgId && loadInboundMsg(msgId)?.source === "workbench";
   const head = verbatim
-    ? `📱 [eru 微信消息${msgId ? ` msg=${msgId}` : ""}]（以下为 eru 原话，脚本逐字转发）`
+    ? fromWorkbench
+      ? `🖥️ [eru 工作台消息 msg=${msgId}]（工作台输入，逐字转发）`
+      : `📱 [eru 微信消息${msgId ? ` msg=${msgId}` : ""}]（以下为 eru 原话，脚本逐字转发）`
     : `📱 [经 AGY 路由转述的消息 · ⚠️ 非 eru 原话，如有疑问以 eru 原话为准]`;
   const rules = loadRules();
   const rk = routeKey || (sessionCid ? routeKeyForCid(sessionCid, rules) : null);
@@ -486,11 +490,11 @@ function buildWrappedTaskPrompt(body, sessionLabel, sessionCid, { msgId = "", ve
     ``,
     `---`,
     `回复微信：node ${SEND_SCRIPT} '结论' [/绝对路径/交付物文件]${sessionFlag}${titleFlag}`,
-    `先秒回：拿到这条后第一件事就是用上面的命令回 eru 一句话（20 字内）——简单问题直接给答案；要动手的说清你接下来做什么。然后再开始干活，干完再发结果。`,
+    `先用上面的命令回 eru 一句话（20 字内）再干活；干完必须再发一次结果——回话后又闷头干 2 分钟以上却不汇报，看门狗会告警。正文写全，附件会在正文之后单独发。`,
     acc
-      ? `验收（脚本强制）：本项目「完成」= ${acc.label}，作为附件发出。没附合格交付物却说完成，消息会被自动降级成【进度 · 未通过验收】。${acc.review === "claude" ? "附件通过脚本检查后会交 Claude 审查，不通过会退回本窗口重做。" : ""}`
-      : `验收（脚本强制）：声称完成必须附交付物文件或 --proof=url:地址；没有就会被标【未验证】。`,
-    `说了「马上 / 正在 / 接下来去做 X」会被登记成承诺并计时（默认 30 分钟），到期没交合格结果会提醒 eru。做不到就直说做不到。eru 点名的工具和引擎（Deep Research / Claude / Codex 等）不许换成别的顶替；调不了就直说，并讲清需要 eru 做哪一步。调研必须附 --proof=research:/证据.md。原型/Mock 必须直说。未经 eru 拍板不写业务代码、不渲染、不开新集。`,
+      ? `验收（脚本强制）：本项目「完成」= ${acc.label}，作为附件发出；不够格会在消息末尾被标「未过验收·只算进度」。${acc.review === "claude" ? "过了脚本检查会交 Claude 审查，不过会退回重做。" : ""}`
+      : `验收（脚本强制）：声称完成须附交付物文件或 --proof=url:地址，否则末尾被标「缺回执·自述」。`,
+    `说「马上/正在/接下来做 X」会登记承诺并计时（默认 30 分钟）。点名的工具/引擎（Deep Research / Claude / Codex）不许顶替，调不了就直说；调研附 --proof=research:/证据.md；Mock 直说；eru 拍板前不写业务代码、不渲染、不开新集。`,
   ];
   if (steps >= HANDOFF_STEPS) {
     lines.push(
@@ -536,6 +540,44 @@ export async function createConversation({ title, body, projectKey, msgId = "", 
 
 const MISSING_RE = /not.?found|no such|unknown conversation|does not exist|invalid (recipient|conversation)/i;
 
+const WATCH_LOCK_DIR = path.join(JOBS_DIR, "locks");
+const watchLockFile = (cid) => path.join(WATCH_LOCK_DIR, `watch-${String(cid).replace(/[^0-9a-zA-Z_.:-]/g, "_")}.pid`);
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 每个会话最多 1 个看门狗：新投递接管，旧的那个按 PID 结束（只结束自己登记的 watch 进程，不按名字杀） */
+function claimWatchLock(cid) {
+  fs.mkdirSync(WATCH_LOCK_DIR, { recursive: true });
+  const f = watchLockFile(cid);
+  try {
+    const old = Number(fs.readFileSync(f, "utf8"));
+    if (old && old !== process.pid && pidAlive(old)) {
+      try {
+        process.kill(old, "SIGTERM");
+      } catch {}
+    }
+  } catch {}
+  fs.writeFileSync(f, String(process.pid));
+}
+function ownsWatchLock(cid) {
+  try {
+    return Number(fs.readFileSync(watchLockFile(cid), "utf8")) === process.pid;
+  } catch {
+    return false;
+  }
+}
+function releaseWatchLock(cid) {
+  try {
+    if (ownsWatchLock(cid)) fs.rmSync(watchLockFile(cid), { force: true });
+  } catch {}
+}
+
 export function spawnWatcher(cid, title, msgId, beforeLines) {
   try {
     const child = spawn(process.execPath, [__filename, "watch", cid, title, msgId || "-", String(beforeLines)], {
@@ -547,11 +589,33 @@ export function spawnWatcher(cid, title, msgId, beforeLines) {
   } catch {}
 }
 
+/**
+ * agentapi 超时/报错不等于没送到（审计 P1-5）：在目标 transcript 新增部分里找 msg=<id>，找到就按已送达处理，
+ * 避免「目标窗口已经在做，桥又把同一条交给总控」造成两个窗口同时执行。
+ */
+export async function injectedDespiteError(cid, beforeLines, msgId, waitMs = 8000) {
+  if (!msgId || msgId === "-") return false;
+  const marker = `msg=${msgId}`;
+  const until = Date.now() + waitMs;
+  while (true) {
+    try {
+      const lines = fs.readFileSync(transcriptPath(cid), "utf8").split("\n").filter(Boolean);
+      if (lines.slice(beforeLines).some((l) => l.includes(marker))) return true;
+    } catch {}
+    if (Date.now() >= until) return false;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
 export async function deliverToAgy({ cid, title, body, msgId = "", verbatim = true, routeKey = null }) {
   const st = loadRouterState();
   const effectiveCid = resolveMirror(cid, st);
   const beforeLines = countTranscriptLines(effectiveCid);
   const res = await callAgentApi(["send-message", effectiveCid, buildWrappedTaskPrompt(body, title, effectiveCid, { msgId, verbatim, routeKey })]);
+  if (res.code !== 0 && (await injectedDespiteError(effectiveCid, beforeLines, msgId))) {
+    console.error(`[agy-route] agentapi exit=${res.code} 但 transcript 已出现 msg=${msgId}，按已送达（回执超时）处理`);
+    res.code = 0;
+  }
 
   if (res.code !== 0) {
     const errText = `${res.err} ${res.out}`.trim();
@@ -601,16 +665,20 @@ export async function deliverToAgy({ cid, title, body, msgId = "", verbatim = tr
  *  - 窗口完全没动作超过 4 分钟 → 告警「卡死」
  *  - 消息已注入后：报错且 45 秒没恢复 → 告警；4 分钟没有任何模型动作 → 告警
  */
-function repliedSince(cid, sinceMs, msgId, watchingRouter) {
+/** 该窗口最后一次「自己」对外回复的时间（排除桥回执、看门狗、审查等系统消息） */
+function lastOwnReplyAt(cid) {
   try {
     const map = readJson(MSG_MAP_FILE, { recent: [] });
-    if (watchingRouter && msgId !== "-" &&
-        loadInboundMsg(msgId)?.routes?.some((route) => route.target && route.target !== cid)) return true;
-    return (map.recent || []).some((r) => r.cid === cid && (r.createdAt || 0) >= sinceMs &&
-      (!watchingRouter || !r.msgId));
+    const hit = (map.recent || []).find((r) => r.cid === cid && !r.msgId && !r.system);
+    return hit?.createdAt || 0;
   } catch {
-    return true; // 读不到就不误报
+    return Infinity; // 读不到就不误报
   }
+}
+
+/** 总控把这条转投给了别的窗口 → 总控这一轮算处理完了 */
+function routerForwarded(cid, msgId) {
+  return msgId !== "-" && Boolean(loadInboundMsg(msgId)?.routes?.some((route) => route.target && route.target !== cid));
 }
 
 async function watchTurnEnd(cid, title, msgId, injectedAt, start, totalMs) {
@@ -621,6 +689,7 @@ async function watchTurnEnd(cid, title, msgId, injectedAt, start, totalMs) {
   let lastChange = Date.now();
   while (Date.now() - start < totalMs) {
     await new Promise((r) => setTimeout(r, POLL));
+    if (!ownsWatchLock(cid)) return; // 有更新的投递接管了这个会话的看门狗
     let size = 0;
     try {
       size = fs.statSync(transcriptPath(cid)).size;
@@ -641,9 +710,19 @@ async function watchTurnEnd(cid, title, msgId, injectedAt, start, totalMs) {
         lastChange = Date.now();
         continue;
       }
-      if (!repliedSince(cid, injectedAt, msgId, watchingRouter)) {
+      // 判据：最后一次对外回复是否晚于最后一次收到用户消息；回过话之后又闷头干了 2 分钟以上才停，也算没汇报（审计 P1-1）
+      if (watchingRouter && routerForwarded(cid, msgId)) return;
+      const lastInbound = Math.max(injectedAt, loadRouterState().lastDispatch?.[cid]?.at || 0);
+      const replyAt = lastOwnReplyAt(cid);
+      const silentWork = lastChange - replyAt;
+      if (replyAt < lastInbound) {
         await notifyWeixin(
-          `⚠️ 「${title}」停了 ${Math.round(QUIET_MS / 60000)} 分钟，没给你回消息，可能做了一半就停了。直接说话它会接着做；想换个窗口就引用这条说「发给 X」`,
+          `⚠️ 「${title}」停了 ${Math.round(QUIET_MS / 60000)} 分钟，没回你消息，可能做了一半就停了。直接说话它会接着做；想换窗口就引用这条说「发给 X」`,
+          { cid, title, engine: "agy", msgId: msgId !== "-" ? msgId : null }
+        );
+      } else if (replyAt !== Infinity && silentWork > 2 * 60_000) {
+        await notifyWeixin(
+          `⚠️ 「${title}」回你之后又干了 ${Math.round(silentWork / 60000)} 分钟，停下时没汇报结果。直接说「继续」或问它进度`,
           { cid, title, engine: "agy", msgId: msgId !== "-" ? msgId : null }
         );
       }
@@ -667,6 +746,7 @@ async function watchDelivery(cid, title, msgId, beforeLines) {
   let errorFirstAt = 0;
   while (Date.now() - start < TOTAL_MS) {
     await new Promise((r) => setTimeout(r, POLL_MS));
+    if (!ownsWatchLock(cid)) return; // 有更新的投递接管了这个会话的看门狗
     const p = transcriptPath(cid);
     if (!fs.existsSync(p)) continue;
     const all = fs.readFileSync(p, "utf8").split("\n").filter(Boolean);
@@ -851,7 +931,16 @@ async function cliMain() {
 
   if (cmd === "watch") {
     const [cid, title, msgId, beforeLines] = rest;
-    await watchDelivery(cid, title, msgId, Number(beforeLines) || 0);
+    claimWatchLock(cid);
+    process.on("SIGTERM", () => {
+      releaseWatchLock(cid);
+      process.exit(0);
+    });
+    try {
+      await watchDelivery(cid, title, msgId, Number(beforeLines) || 0);
+    } finally {
+      releaseWatchLock(cid);
+    }
     return;
   }
 
