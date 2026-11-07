@@ -17,6 +17,9 @@ export const COMMITMENTS_FILE = path.join(CLAWBOT_DIR, "commitments.json");
 const DEFAULT_DUE_MIN = 30;
 const MAX_DUE_MIN = 240;
 const KEEP_ITEMS = 300;
+/** 超时 4 小时还没兑现：已催过一次、eru 也没再追，自动归档为 expired，不再出现在「答应了还没交」 */
+export const STALE_AFTER_DUE_MS = 4 * 3600_000;
+const isStale = (c, now = Date.now()) => c.status === "open" && now - (c.dueAt || 0) > STALE_AFTER_DUE_MS;
 
 const PROMISE_RE =
   /(马上|立刻|立即|现在就|这就|随后|稍后|待会儿?|接下来我?|我这就|我现在|我去|我会|正在|继续)[^。！？!?\n]{0,30}?(跑|做|改|写|查|调|抓|出|发|渲染|重构|生成|修|整理|研究|调研|检索|搜索|拆解|审|补|重做|实现|开发|部署|测|录|剪)/;
@@ -60,7 +63,7 @@ function load() {
 
 export function listOpenCommitments() {
   return Object.values(load().items || {})
-    .filter((c) => c.status === "open")
+    .filter((c) => c.status === "open" && !isStale(c))
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
@@ -238,6 +241,11 @@ export function takeOverdue(now = Date.now()) {
   const due = [];
   updateJson(COMMITMENTS_FILE, { items: {} }, (db) => {
     for (const c of Object.values(db.items || {})) {
+      if (isStale(c, now)) {
+        c.status = "expired";
+        c.expiredAt = now;
+        continue;
+      }
       if (c.status === "open" && !c.remindedAt && now >= c.dueAt) {
         c.remindedAt = now;
         due.push({ ...c });

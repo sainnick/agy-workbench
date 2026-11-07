@@ -22,7 +22,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { sendMessageWeixin, sendMessageItemWeixin } from "./dist/src/messaging/send.js";
 import { MessageItemType } from "./dist/src/api/types.js";
-import { recordMessageSessionMap } from "./weixin-send.mjs";
+import { recordMessageSessionMap, checkWeixinBrevity, spillToOutbox } from "./weixin-send.mjs";
 import { readJson, updateJson, appendJsonl } from "./state-io.mjs";
 import {
   CLAWBOT_DIR,
@@ -45,6 +45,8 @@ import {
   loadInboundMsg,
   markInboundMsg,
   composeVerbatim,
+  livePending,
+  clearProjectPending,
 } from "./core.mjs";
 
 export { loadRouterState, saveRouterState, updateRouterState } from "./core.mjs";
@@ -69,9 +71,7 @@ const PROJECT_ID_MAP = {
 
 export function formatPendingRepliesTail(excludeCid = "", minAgeMs = 90_000) {
   const st = loadRouterState();
-  const pending = Object.values(st.pendingReplies || {}).filter(
-    (p) => p && p.cid && p.cid !== excludeCid && Date.now() - (p.sentAt || 0) >= minAgeMs
-  );
+  const pending = livePending(st).filter((p) => p.cid !== excludeCid && Date.now() - (p.sentAt || 0) >= minAgeMs);
   if (pending.length === 0) return "";
   pending.sort((a, b) => (a.sentAt || 0) - (b.sentAt || 0));
   const lines = [`\n\n📌 **【防漏回提醒：还有 ${pending.length} 个窗口等你回复】**`];
@@ -232,6 +232,8 @@ export function callAgentApi(args, { projectKey } = {}) {
 }
 
 export async function notifyWeixin(text, sessionMeta = null) {
+  // 系统通知同样受微信短消息卡控：超规就全文落盘，只发摘要
+  if (!checkWeixinBrevity(text).ok) text = spillToOutbox(text, "notify").text;
   if (DRY_RUN) {
     console.log(`[dry-run notify] ${text}`);
     return null;
@@ -490,7 +492,8 @@ function buildWrappedTaskPrompt(body, sessionLabel, sessionCid, { msgId = "", ve
     ``,
     `---`,
     `回复微信：node ${SEND_SCRIPT} '结论' [/绝对路径/交付物文件]${sessionFlag}${titleFlag}`,
-    `先用上面的命令回 eru 一句话（20 字内）再干活；干完必须再发一次结果——回话后又闷头干 2 分钟以上却不汇报，看门狗会告警。正文写全，附件会在正文之后单独发。`,
+    `先用上面的命令回 eru 一句话（20 字内）再干活；干完必须再发一次结果——回话后又闷头干 2 分钟以上却不汇报，看门狗会告警。`,
+    `微信是手机聊天：结果只写 150~300 字人话（一句结论 + 下一步 / 要拍板的事）。严禁贴整篇 .md、表格、长列表；详细内容写进文件留电脑，要给 eru 看就作为附件发。正文超 600 字 / 含表格 / 列表超 8 条 / 照抄附件，weixin-send 会直接拒发。`,
     acc
       ? `验收（脚本强制）：本项目「完成」= ${acc.label}，作为附件发出；不够格会在消息末尾被标「未过验收·只算进度」。${acc.review === "claude" ? "过了脚本检查会交 Claude 审查，不过会退回重做。" : ""}`
       : `验收（脚本强制）：声称完成须附交付物文件或 --proof=url:地址，否则末尾被标「缺回执·自述」。`,
@@ -644,10 +647,9 @@ export async function deliverToAgy({ cid, title, body, msgId = "", verbatim = tr
   }
 
   updateRouterState((s) => {
-    const pending = { ...(s.pendingReplies || {}) };
-    delete pending[cid];
-    delete pending[effectiveCid];
-    s.pendingReplies = pending;
+    // eru 给这个项目发了新消息 → 该项目所有窗口的旧待回一起作废（不再只清同一个 cid）
+    clearProjectPending(s, cid, "eru_new_message");
+    clearProjectPending(s, effectiveCid, "eru_new_message");
     s.sessionAliases = { ...(s.sessionAliases || {}), [effectiveCid]: title };
     s.lastRoutedCid = effectiveCid;
     s.lastRoutedTitle = title;

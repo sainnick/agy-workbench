@@ -115,21 +115,24 @@
         "/Users/eru/AIGC"
       ],
       "status": "decide",
-      "headline": "EP01 三个零说教剧本：①《两清》②《最后一版》③《替一天》",
+      "headline": "EP01 逻辑重审：两份完整候选台本已落盘，波妞主推《替一天》，待 eru 选稿",
       "lastDecision": {
-        "at": "2026-11-06",
-        "quote": "感觉衔接的很尴尬生硬"
+        "at": "2026-11-07",
+        "quote": "逻辑呢？虽然离谱也得有逻辑吧"
       },
-      "next": "你选一个剧本 → Flow Omni 360p 草稿审节奏",
+      "next": "eru 审《最后一版》重写稿与《替一天》完整台本；拍板后再进入分镜与影像制作。Claude CLI 复审本轮因未登录未取得结果",
       "owner": "eru",
       "gates": [
         "剧本先定稿再出片",
+        "首帧交代异常机制；启停、权限与结局遵守同一规则；时段、地点、人时和费用可复核",
         "先 360p 草稿，拍板后再 Upscale",
         "正片 0 哲学名词，不在画面里弹教科书词条（eru：衔接尴尬生硬）",
         "出片管线：Google Flow · Omni 1.2 Flash（Ultra 每月 25,000 Flow Credits；360p 1 积分/秒，720p 3 积分/秒）"
       ],
-      "doc": "/Users/eru/AIGC/projects/zero-clinic/scripts/EP01_零说教纯故事算账流三剧本_2026-11-06.md",
-      "updatedAt": "2026-11-06T12:53:58.775Z"
+      "doc": "/Users/eru/Desktop/agy工作站/交付/第零诊室/2026-11-07_戏剧逻辑重构/03_替一天_完整台本.md",
+      "logicReviewDoc": "/Users/eru/Desktop/agy工作站/交付/第零诊室/2026-11-07_戏剧逻辑重构/01_逻辑尸检与改稿裁决.md",
+      "researchDoc": "/Users/eru/Desktop/agy工作站/交付/第零诊室/2026-11-07_戏剧逻辑重构/04_调研证据.md",
+      "updatedAt": "2026-11-07"
     },
     {
       "id": "leiting",

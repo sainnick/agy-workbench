@@ -1,0 +1,17 @@
+node_modules/
+*.log
+latest_peer.json
+msg_session_map.json*
+router_state.json*
+commitments.json
+qr_status.json
+inbox/
+jobs/
+*.jsonl
+backup_*/
+_backup_*/
+*.tmp
+.DS_Store
+handled_ids.json
+*.bak
+classifier_cwd/

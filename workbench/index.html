@@ -284,6 +284,7 @@ function decisions(){
   const out=[];
   for(const p of S.projects) if(p.status==='decide'||p.status==='blocked'||(p.owner==='eru'&&p.next&&!['idle','stopped','done'].includes(p.status))) out.push({p,t:p.name,d:p.next||p.headline,at:p.live.lastReport?.at||p.live.lastAt});
   for(const x of S.pending||[]) out.push({t:x.title,d:x.summary,at:new Date(x.sentAt).toISOString()});
+  for(const e of S.nextEpisodes||[]){ const p=S.projects.find(q=>q.id===e.key); if(p&&out.some(o=>o.p===p)) continue; out.push({p,t:e.name,d:e.text,at:e.lastAt?new Date(e.lastAt).toISOString():null}); }
   return out;
 }
 
@@ -421,7 +422,8 @@ async function renderDetail(){
   const st={status:p.status,owner:p.owner};
   const rows=[];
   if(L.agySteps) rows.push(['AGY',`${L.agySteps} 步 · ${tok(L.agyTokens)}${L.agyErrors?` · 报错 ${L.agyErrors}`:''}`]);
-  if(L.claudeSessions||L.claudeCallsFromAgy) rows.push(['Claude',`${L.claudeSessions} 个会话 · ${tok(L.claudeTokens)} · 被 AGY 调 ${L.claudeCallsFromAgy} 次`]);
+  if(L.mainSession) rows.push(['主窗口',`${L.mainSession.title||''} · ${L.mainSession.cid.slice(0,8)}`]);
+  if(L.claudeSessions||L.claudeHistory||L.claudeCallsFromAgy) rows.push(['Claude',`${L.claudeSessions?`进行中 ${L.claudeSessions} 个 · `:''}历史后台调用 ${L.claudeHistory||0} 次（已结束） · ${tok(L.claudeTokens)}`]);
   if(L.codexCallsFromAgy) rows.push(['Codex',`被 AGY 调 ${L.codexCallsFromAgy} 次`]);
   if(L.lastAt) rows.push(['最后活动',ago(L.lastAt)]);
   const paths=[...(p.paths||[]),...(p.doc?[p.doc]:[])];
@@ -430,7 +432,8 @@ async function renderDetail(){
       <select id="fStatus" class="pop" aria-label="状态">${Object.entries(STATUS).map(([k,n])=>`<option value="${k}" ${k===p.status?'selected':''}>${n}</option>`).join('')}</select></div>
     <div class="pmeta">${esc(p.group)}</div>
     ${p.lastDecision?`<div class="blk"><div class="quote">“${esc(p.lastDecision.quote)}”<small>${esc(p.lastDecision.at)}</small></div></div>`:''}
-    ${p.live.lastReport?`<div class="blk"><h2 class="gtitle">最新汇报 <small>${ago(p.live.lastReport.at)}</small></h2><div class="chat"><div class="msg"><div class="b">${esc(p.live.lastReport.text.slice(0,600))}</div></div></div></div>`:''}
+    ${p.nextEpisode?`<div class="blk"><div class="quote">${esc(p.nextEpisode.text)}<small>只提醒你拍板，Agent 不会自己开新集</small></div></div>`:''}
+    ${p.live.lastReport?`<div class="blk"><h2 class="gtitle">${p.nextEpisode?'上一期最后汇报（已归档）':'最新汇报'} <small>${ago(p.live.lastReport.at)}</small></h2><div class="chat"><div class="msg"><div class="b">${esc(p.live.lastReport.text.slice(0,600))}</div></div></div></div>`:''}
     ${p.routable?`<div class="form compose">
       <textarea id="cText" rows="3" placeholder="直接跟「${esc(p.name)}」说…（和在微信里发一样，原话直达，回复发到你微信）"></textarea>
       <div class="savebar"><span class="hint">⌘↩ 发送</span><button class="pbtn" id="cSend" disabled>发送</button></div>
@@ -478,6 +481,7 @@ function bubble(x){
 /* ---------- 验收 ---------- */
 const GATE_TAG=/^[\u{1F7E1}\u{1F50E}✅⚠❌\u{1F9EA}\u{1F6AB}\u{1F50D}]/u;
 function latestLine(p){
+  if(p.nextEpisode) return p.nextEpisode.text; // 上一期的具体修改话术已归档，换成干净的下一期提醒
   const r=p.live&&p.live.lastReport; if(!r) return p.headline;
   const line=String(r.text).split('\n').map(x=>x.replace(/\*\*/g,'').replace(/^[\s\-#>]+/,'').trim()).find(x=>x && !GATE_TAG.test(x));
   return line||p.headline;
@@ -506,7 +510,7 @@ function vChecks(){
       <section><h2 class="gtitle">完成判定</h2>
         <div class="glist">${C.verdicts.length?C.verdicts.filter(v=>has(v.title,v.text)).map(v=>{const x=VERDICT[v.verdict]||[v.verdict,''];return `<div class="grow"><span class="dot ${x[1]}"></span><span class="tx"><div class="t">${esc(v.title||v.routeKey||'')} · ${x[0]}</div><div class="d">${esc(v.text||'')}</div></span><span class="m">${ago(v.at)}</span></div>`;}).join(''):'<div class="empty">还没有</div>'}</div>
         <h2 class="gtitle" style="margin-top:20px">已兑现 / 撤销</h2>
-        <div class="glist">${C.closed.length?C.closed.map(c=>`<div class="grow"><span class="dot ${c.status==='fulfilled'?'g':'h'}"></span><span class="tx"><div class="t">${esc(c.title)}</div><div class="d">「${esc(c.text)}」</div></span><span class="m">${c.status==='fulfilled'?'兑现':'撤销'}</span></div>`).join(''):'<div class="empty">还没有</div>'}</div>
+        <div class="glist">${C.closed.length?C.closed.map(c=>`<div class="grow"><span class="dot ${c.status==='fulfilled'?'g':'h'}"></span><span class="tx"><div class="t">${esc(c.title)}</div><div class="d">「${esc(c.text)}」</div></span><span class="m">${c.status==='fulfilled'?'兑现':c.status==='expired'?'超时归档':'撤销'}</span></div>`).join(''):'<div class="empty">还没有</div>'}</div>
       </section>
     </div></div>`;
 }

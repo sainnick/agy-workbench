@@ -18,6 +18,7 @@ import net from "node:net";
 import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { nextEpisodeReminders, isMediaProject } from "../.agents/clawbot/core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.WORKBENCH_PORT || 4800);
@@ -624,7 +625,7 @@ function readConstraints(titleOf) {
     .slice(0, 20)
     .map((x) => ({ at: x.ts, engine: x.engine, project: x.project, isError: x.isError, costUsd: x.costUsd, durationMs: x.durationMs }));
   return {
-    open: items.filter((c) => c.status === "open").map((c) => ({ id: c.id, cid: c.cid, title: c.title, text: c.text, dueAt: c.dueAt, createdAt: c.createdAt, reminded: Boolean(c.remindedAt), needsResearch: c.needsResearch })),
+    open: items.filter((c) => c.status === "open" && Date.now() - (c.dueAt || 0) <= 4 * 3600_000).map((c) => ({ id: c.id, cid: c.cid, title: c.title, text: c.text, dueAt: c.dueAt, createdAt: c.createdAt, reminded: Boolean(c.remindedAt), needsResearch: c.needsResearch })),
     closed: items.filter((c) => c.status !== "open").slice(0, 20).map((c) => ({ id: c.id, title: c.title, text: c.text, status: c.status, at: c.fulfilledAt || c.droppedAt || c.createdAt })),
     verdicts,
     reviews,
@@ -650,12 +651,19 @@ async function buildState() {
     if (/^\s*(⚠️|⏰|↪️|🤔|🕒|🗑️|🦞|❓|🔒|🔓)/u.test(String(e.bodySnippet || ""))) continue; // 桥自己发的系统提醒不算窗口汇报
     (sentByCid[e.cid] ||= []).push({ at: new Date(e.createdAt).toISOString(), text: String(e.bodySnippet || "").slice(0, 1200) });
   }
+  // 自媒体矩阵「🎬 待开下一期」：与 bridge 同一套判定（core.mjs nextEpisodeReminders）
+  let nextEps = [];
+  try { nextEps = nextEpisodeReminders(undefined, Date.now(), { registry: reg }); } catch {}
+  const nextByKey = Object.fromEntries(nextEps.map((e) => [e.key, e]));
   const routeKeys = new Set(Object.keys(readJson(path.join(CLAWBOT, "rules.json"), { routes: {} }).routes || {}));
   const projects = reg.projects.map((p) => {
     const sess = (p.sessions || [])
       .map((ref) => (ref.engine === "agy" ? agyById[ref.cid] : null))
       .filter(Boolean);
     const cl = claude.filter((c) => c.cwd && (p.claudeCwd || []).some((d) => c.cwd === d || c.cwd.startsWith(d + "/")));
+    // Claude CLI 每次 `claude -p` 都是一次性后台调用，结束即归档；只有 2 小时内还在动的才算「活跃会话」，
+    // 其余计为历史调用次数，不再和 AGY 主窗口混在一起显示成「N 个会话」
+    const clActive = cl.filter((c) => c.lastAt && Date.now() - Date.parse(c.lastAt) < 2 * 3600_000);
     const lastAts = [...sess.map((s) => s.lastAt), ...cl.map((c) => c.lastAt)].filter(Boolean).sort();
     const fromMap = (p.sessions || []).flatMap((ref) => sentByCid[ref.cid] || []);
     const reports = [...fromMap, ...sess.flatMap((s) => s.reports)]
@@ -665,12 +673,17 @@ async function buildState() {
     return {
       ...p,
       routable: Boolean(routeKeys.has(p.id)),
+      media: isMediaProject(p),
+      nextEpisode: nextByKey[p.id] || null,
       live: {
         lastAt: lastAts[lastAts.length - 1] || null,
         agySteps: sess.reduce((n, s) => n + s.steps, 0),
         agyTokens: sess.reduce((n, s) => n + tot(s), 0),
         agyErrors: sess.reduce((n, s) => n + s.errors, 0),
-        claudeSessions: cl.length,
+        mainSession: sess[0] ? { cid: sess[0].id, title: sess[0].title } : null,
+        agySessions: sess.length,
+        claudeSessions: clActive.length,
+        claudeHistory: cl.length - clActive.length,
         claudeTokens: cl.reduce((n, s) => n + tot(s), 0),
         claudeCallsFromAgy: sess.reduce((n, s) => n + s.claudeCalls, 0),
         codexCallsFromAgy: sess.reduce((n, s) => n + s.codexCalls, 0),
@@ -749,7 +762,8 @@ async function buildState() {
   metrics.claudeShare24 = all24 ? metrics.claude24 / all24 : 0;
   metrics.memPressure = hp.memFreeGB < 0.5;
 
-  const pending = Object.values(routerState.pendingReplies || {}).filter((p) => p && p.cid);
+  // 与 bridge 同口径：超过 4 小时的旧汇报已自动归档，不再显示
+  const pending = Object.values(routerState.pendingReplies || {}).filter((p) => p && p.cid && Date.now() - (p.sentAt || 0) < 4 * 3600_000);
 
   const sessions = [...agy, ...claude]
     .map(slimSession)
@@ -788,6 +802,7 @@ async function buildState() {
     sessions,
     wechat: { ...wechat, messages: wechat.messages.map((m) => ({ ...m, routedTitle: !m.routedTo ? null : m.routedTo.startsWith("claude:") ? `Claude · ${m.routedTo.slice(7)}` : m.routedTo.startsWith("codex:") ? "Codex" : (m.routedTo === "new" || m.routedTo.startsWith("new:")) ? "新开窗口" : agyById[m.routedTo]?.title || m.routedTo.slice(0, 8) })) },
     pending,
+    nextEpisodes: nextEps,
     lockedSession: routerState.lockedSession || null,
     constraints: readConstraints((cid) => (cid && agyById[cid]?.title) || (cid && cid.startsWith("claude:") ? `Claude · ${cid.slice(7)}` : cid ? cid.slice(0, 8) : "")),
   };

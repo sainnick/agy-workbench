@@ -84,4 +84,6 @@ node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs '结论' [/
 node /Users/eru/Desktop/agy工作站/.agents/clawbot/agy-route.mjs route --msg=<编号> --to=<路由键|会话ID|claude:<路由键>|new:<标题>>
 ```
 
+**🔴 微信只发短消息**：手机屏幕，150~300 字（最多 500 字），只写结论 + 下一步 / 要拍板的事。不贴整篇 .md、不发表格和长列表，详情留在文件里，需要时作为附件发。超 600 字、带表格、列表超 8 条或照抄附件，`weixin-send` 会直接拒发。
+
 bridge 由 `watchdog.sh` 托管，不要在 AGY 终端里另起 `node bridge.mjs`。

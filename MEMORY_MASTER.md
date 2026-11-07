@@ -53,6 +53,8 @@
 - **回复微信**：
   `node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs '结论' [/绝对路径/文件] --session=<本窗口会话ID> [--proof=…]`
   - 不带 `--session` 会被记为未归属。
+  - **🔴 微信短消息铁律（2026-11-07 eru 批评「发这么长一段干嘛」后定）**：微信是手机聊天窗口。日常汇报 150~300 字、最多 500 字，只写「一句结论 + 下一步 / 要拍板的事」。严禁把整篇 .md 报告 `read_text()` 塞进正文，严禁表格、长列表；详细内容写进文件留电脑，eru 要看就作为附件发，正文只写一句说明。
+  - 脚本硬卡控：正文超 600 字、含 Markdown 表格、列表超 8 条、正文照抄所附 .md，`weixin-send` 直接拒发（退出码 3），必须缩写后重发，不许拆成多条绕过。job-runner 系统消息和 `notifyWeixin` 超规时，全文自动落盘到 `.agents/clawbot/outbox/`，微信只发摘要和路径。
   - 回执写法：`file:/路径` | `url:地址` | `cmd:"测试命令"` | `mock:/项目目录` | `research:/证据.md`，可以写多个。
 - **执行引擎**：默认 AGY，按 project 分发。Claude / Codex 只在 eru 点名（`/claude <路由键> <指令>`、`/codex <指令>`）或重投（`/retry <msg编号> claude`）时使用，由 `job-runner.mjs` 在独立进程里跑，记账到 `delegations.jsonl`。
 - **卡死告警**：每次投递后会起一个 `watch` 进程盯着窗口。消息送达后报错停住，或者 4 分钟没有任何动作，会发微信告警；窗口在忙、消息还在排队时不算卡死。

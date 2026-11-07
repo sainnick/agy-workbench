@@ -13,7 +13,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { appendJsonl } from "./state-io.mjs";
-import { CLAWBOT_DIR, HUB_DIR, JOBS_DIR, loadRouterState, updateRouterState, loadInboundMsg } from "./core.mjs";
+import { CLAWBOT_DIR, HUB_DIR, JOBS_DIR, loadRouterState, updateRouterState, loadInboundMsg, clearProjectPending } from "./core.mjs";
 import { DELEGATIONS_FILE } from "./proof.mjs";
 
 const CLAUDE_BIN = "/Users/eru/.local/bin/claude";
@@ -395,9 +395,7 @@ async function main() {
   try {
     if (job.engine === "claude" && job.project) {
       updateRouterState((s) => {
-        const p = { ...(s.pendingReplies || {}) };
-        delete p[`claude:${job.project}`];
-        s.pendingReplies = p;
+        clearProjectPending(s, `claude:${job.project}`, "claude_job"); // Claude 接手该项目 → 该项目 AGY 窗口的旧待回一并作废
       });
     }
     await sendWeixin([`--tool-start`, `${label}: ${job.title || ""}`]);

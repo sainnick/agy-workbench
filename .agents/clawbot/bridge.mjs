@@ -63,6 +63,9 @@ import {
   composeVerbatim,
   BRAIN_DIR,
   MSG_MAP_FILE,
+  livePending,
+  prunePending,
+  nextEpisodeReminders,
 } from "./core.mjs";
 import { readJsonlTail, readJson, updateJson } from "./state-io.mjs";
 import { listOpenCommitments, takeOverdue, dropCommitment, fmtAgo, claimNudgeSlot } from "./commitments.mjs";
@@ -214,9 +217,10 @@ async function handlePrivilegedSlashCommand(fullText, mediaFiles, account, fromU
 
   if (cmd === "/todo" || cmd === "/未回" || cmd === "/待办") {
     const st = loadRouterState();
-    const pending = Object.values(st.pendingReplies || {}).filter((p) => p && p.cid);
+    const pending = livePending(st);
     const promises = listOpenCommitments();
-    if (pending.length === 0 && promises.length === 0) {
+    const episodes = nextEpisodeReminders(st);
+    if (pending.length === 0 && promises.length === 0 && episodes.length === 0) {
       await sendMessageWeixin({ to: fromUserId, text: "✅ 没有等你回的汇报，也没有答应了还没交的事。", opts: sendOpts });
       return true;
     }
@@ -237,6 +241,11 @@ async function handlePrivilegedSlashCommand(fullText, mediaFiles, account, fromU
         lines.push(`- \`${c.id}\` **${c.title}**：「${c.text}」（${late > 0 ? `已超时 ${fmtAgo(late)}` : `还剩 ${fmtAgo(-late)}`}）`);
       }
       lines.push(`不用做了就引用这条回「不用做了」`);
+    }
+    if (episodes.length) {
+      lines.push(`\n🎬 **抖音号待开下一期（${episodes.length}）：**`);
+      for (const e of episodes) lines.push(`- **${e.name}**：${e.text.replace(/^🎬 下一期提醒：|^⏳ /u, "")}`);
+      lines.push(`要开哪个号直接说，我不会自己开新集。`);
     }
     await sendMessageWeixin({ to: fromUserId, text: lines.join("\n"), opts: sendOpts });
     return true;
@@ -1292,6 +1301,7 @@ async function main() {
       // 原子领取：在锁内挑出到期项并标记已提醒，不再整表覆盖（否则会冲掉期间新登记/刚删除的待回，审计 P2-2）
       let due = [];
       updateRouterState((st) => {
+        prunePending(st, now); // 超过 4 小时的旧汇报自动归档，不再提醒
         const pm = { ...(st.pendingReplies || {}) };
         due = Object.values(pm).filter((p) => p && p.cid && (p.remindedCount || 0) === 0 && now - (p.sentAt || now) >= 360_000);
         for (const p of due) pm[p.cid] = { ...p, remindedCount: (p.remindedCount || 0) + 1, lastRemindedAt: now };
@@ -1324,6 +1334,40 @@ async function main() {
       log(`Pending reminder timer warning: ${String(e)}`);
     }
   }, 60_000);
+
+  // 自媒体矩阵「🎬 下一期提醒」：上一期待办归档后、该号又没在推进新一期 → 每个号最多 20 小时提醒一次，
+  // 只在 10:00–22:59 发，合并成一条；只提醒 eru 拍板，绝不自动开新集
+  setInterval(async () => {
+    try {
+      if (!fs.existsSync(PEER_FILE)) return;
+      const peer = JSON.parse(fs.readFileSync(PEER_FILE, "utf8"));
+      const now = Date.now();
+      const hour = new Date(now).getHours();
+      if (hour < 10 || hour >= 23) return;
+      const lastInMs = peer.updatedAt ? new Date(peer.updatedAt).getTime() : 0;
+      if (now - lastInMs < 150_000) return; // eru 正在打字，不打断
+      let due = [];
+      updateRouterState((st) => {
+        prunePending(st, now);
+        const notified = { ...(st.nextEpisodeNotifiedAt || {}) };
+        due = nextEpisodeReminders(st, now).filter((e) => now - (notified[e.key] || 0) >= 20 * 3600_000);
+        for (const e of due) notified[e.key] = now;
+        st.nextEpisodeNotifiedAt = notified;
+      });
+      if (!due.length) return;
+      const lines = [`🎬 **【下一期提醒】${due.length} 个抖音号该定下一期了：**\n`];
+      for (const e of due) lines.push(`- **${e.name}**：${e.text.replace(/^🎬 下一期提醒：|^⏳ /u, "")}`);
+      lines.push(`\n💡 想开哪个号就直接说，我等你拍板，不会自己开新集。`);
+      await sendMessageWeixin({
+        to: peer.fromUserId,
+        text: lines.join("\n"),
+        opts: { baseUrl: peer.baseUrl, token: peer.token, contextToken: peer.contextToken, accountId: peer.accountId },
+      });
+      log(`Sent next-episode reminder for ${due.map((e) => e.key).join(",")}`);
+    } catch (e) {
+      log(`Next-episode reminder warning: ${String(e)}`);
+    }
+  }, 300_000);
 
   setInterval(() => {
     checkOverdueCommitments().catch((e) => log(`Commitment check warning: ${String(e)}`));

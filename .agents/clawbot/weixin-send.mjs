@@ -15,6 +15,10 @@
  *   - --engine= / AGY_ENGINE 已停用；系统身份只认 job-runner 的一次性票据 CLAWBOT_JOB_TICKET
  *   - 正文里手打的系统保留头（「Claude 审查通过 · 可拍板」等）一律剥成「窗口自述」
  *   - 未传项目 --session 的「完成」永不给绿勾；先发成功、再写 proofs.jsonl / 核销承诺 / 排审查
+ *
+ * 短消息硬卡控（2026-11-07）：正文 >600 字 / 含 Markdown 表格 / 列表 >8 条 / 正文照抄所附 .md
+ *   → 窗口调用直接拒发（退出码 3），要求缩成 150~300 字「结论 + 下一步」；
+ *   → 系统票据消息（job-runner）全文落盘 outbox/，微信只发摘要 + 路径。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -29,7 +33,7 @@ import { CDN_BASE_URL } from "./dist/src/auth/accounts.js";
 import { initializeQuoteStore } from "./dist/src/messaging/quote-store.js";
 import { readJson, updateJson, appendJsonl, readJsonlTail } from "./state-io.mjs";
 import { processOutgoing, holdForReview } from "./commitments.mjs";
-import { PEER_FILE, MSG_MAP_FILE, HUB_DIR, UUID_RE, JOBS_DIR, CLAWBOT_DIR, resolveMirror, loadRules, loadRouterState, updateRouterState, routerCidSet, routeKeyForCid } from "./core.mjs";
+import { PEER_FILE, MSG_MAP_FILE, HUB_DIR, UUID_RE, JOBS_DIR, CLAWBOT_DIR, resolveMirror, loadRules, loadRouterState, updateRouterState, routerCidSet, routeKeyForCid, prunePending, clearProjectPending } from "./core.mjs";
 import { runProof, checkAcceptance, detectCompletionClaim, detectResearchClaim, detectEngineClaims, hasEngineEvidence, PROOFS_FILE, DELEGATIONS_FILE } from "./proof.mjs";
 
 const MSG_MAP_MAX_IDS = 3000;
@@ -126,6 +130,76 @@ export function formatWeixinText(raw) {
 }
 
 /**
+ * 微信短消息硬卡控（2026-11-07，eru 批评「发这么长一段干嘛」后加）：
+ * 微信是手机聊天窗口，日常汇报 150~300 字，只说「结论 + 下一步 / 要拍板的事」。
+ * 以下任一条命中即判「超规」：
+ *   - 正文（去空白）> BREVITY_HARD 字
+ *   - 含 Markdown 表格（|---|---| 分隔行，或连续 3 行以上 |…| 行）
+ *   - 列表项 > BREVITY_MAX_LIST 条
+ *   - 正文和所附 .md/.txt 附件大段重复（把报告 read_text() 塞进正文又附原文件）
+ * 窗口（AGY/手动调用）超规 → 拒发、退出码 3，要求缩成 200 字人话；
+ * 系统票据（job-runner 的 Claude/Codex 结果、审查）超规 → 全文落盘 outbox/，微信只发摘要 + 路径。
+ */
+export const BREVITY_SOFT = 300;
+export const BREVITY_HARD = 600;
+export const BREVITY_MAX_LIST = 8;
+export const OUTBOX_DIR = path.join(CLAWBOT_DIR, "outbox");
+
+const visibleLen = (s) => [...String(s || "").replace(/\s+/g, "")].length;
+
+export function checkWeixinBrevity(rawText, files = []) {
+  const text = String(rawText || "").replace(/\\n/g, "\n");
+  const lines = text.split("\n");
+  const reasons = [];
+  const len = visibleLen(text);
+  if (len > BREVITY_HARD) reasons.push(`正文 ${len} 字，超过 ${BREVITY_HARD} 字上限`);
+
+  const hasTableSep = lines.some((l) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(l));
+  let pipeRun = 0, maxPipeRun = 0;
+  for (const l of lines) {
+    pipeRun = /^\s*\|.*\|\s*$/.test(l) ? pipeRun + 1 : 0;
+    maxPipeRun = Math.max(maxPipeRun, pipeRun);
+  }
+  if (hasTableSep || maxPipeRun >= 3) reasons.push("含 Markdown 表格（微信里会变成一堆竖线）");
+
+  const listCount = lines.filter((l) => /^\s*([-*+•▸]|\d+[.、)）])\s+/.test(l)).length;
+  if (listCount > BREVITY_MAX_LIST) reasons.push(`列表 ${listCount} 条，超过 ${BREVITY_MAX_LIST} 条`);
+
+  if (len > 200) {
+    const probe = text.replace(/\s+/g, "");
+    for (const f of files) {
+      if (!/\.(md|markdown|txt)$/i.test(f)) continue;
+      try {
+        const body = fs.readFileSync(path.resolve(f), "utf8").replace(/\s+/g, "");
+        // 抽正文中段 3 个 60 字片段，任意 2 个能在附件里找到 → 判为贴原文
+        const picks = [0.2, 0.5, 0.8].map((r) => probe.slice(Math.floor(probe.length * r), Math.floor(probe.length * r) + 60)).filter((p) => p.length >= 40);
+        if (picks.filter((p) => body.includes(p)).length >= 2) reasons.push(`正文是附件 ${path.basename(f)} 的原文复制，附件已经发了就别再贴`);
+      } catch {}
+    }
+  }
+  return { ok: reasons.length === 0, len, soft: len > BREVITY_SOFT, reasons };
+}
+
+/** 系统消息超规时：全文落盘，返回只含摘要 + 路径的短正文 */
+export function spillToOutbox(rawText, label = "msg") {
+  fs.mkdirSync(OUTBOX_DIR, { recursive: true });
+  const ts = new Date(Date.now() + 8 * 3600_000).toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const file = path.join(OUTBOX_DIR, `${ts}_${String(label).replace(/[^\w一-龥-]/g, "").slice(0, 20) || "msg"}.md`);
+  fs.writeFileSync(file, String(rawText || ""), "utf8");
+  const plain = String(rawText || "")
+    .replace(/\\n/g, "\n")
+    .split("\n")
+    .filter((l) => l.trim() && !/^\s*\|/.test(l) && !/^\s*[-=━─]{3,}\s*$/.test(l) && !l.trim().startsWith("```"))
+    .map((l) => l.replace(/^#+\s*/, "").replace(/\*\*/g, "").trim())
+    .join(" ");
+  let head = [...plain].slice(0, 220).join("");
+  const cut = Math.max(head.lastIndexOf("。"), head.lastIndexOf("！"), head.lastIndexOf("？"), head.lastIndexOf("；"));
+  if (cut > 80) head = head.slice(0, cut + 1);
+  else if ([...plain].length > 220) head += "…";
+  return { file, text: `${head}\n\n（全文 ${visibleLen(rawText)} 字太长，已存电脑：${file}）` };
+}
+
+/**
  * 会话归属：只认显式传入的 --session / --title（或环境变量）。
  * 不再按正文关键词猜（旧版会把提到「闲鱼」的消息挂错窗口）；没传就记为 unassigned，引用时交给路由判断。
  */
@@ -185,11 +259,23 @@ function extractPendingSummary(body) {
   return firstLine;
 }
 
+/** 「已转交 / 已转发给 xx 窗口」这类转交说明：不是要 eru 回复的汇报，不进待回 */
+function isRelayNotice(body, filePath) {
+  if (filePath) return false;
+  const t = String(body || "").replace(/\*\*/g, "");
+  return /(已|原样|帮你|帮您|这就|马上)?(转交|转发给|转给|投递给|派给|交给)[^。！!\n]{0,40}(窗|专窗|总控|会话|df666dc1|[0-9a-f]{8})/.test(t) || /^(已|原样)(转交|转发)/.test(t.trim());
+}
+
 export function recordPendingReply({ cid, title, body, filePath }) {
   if (!cid || cid === "unassigned" || isSystemNotificationText(body)) return;
+  const relay = isRelayNotice(body, filePath);
   try {
     updateRouterState((st) => {
       if (routerCidSet(st).has(cid)) return st;
+      prunePending(st);
+      if (relay) return st; // 转交说明不是汇报：既不登记，也不动该项目原有待回
+      // 同一项目任何窗口 / Claude 有新动作 → 旧待回作废，以最新这条为准
+      clearProjectPending(st, cid, "superseded");
       const needsDecision = /[?？]|请拍板|请审阅|请确认|你看|觉得|可以吗|要不要|首选|候选/.test(body || "");
       st.pendingReplies = {
         ...(st.pendingReplies || {}),
@@ -563,8 +649,30 @@ async function main() {
   if (UUID_RE.test(sessionCid)) sessionCid = resolveMirror(sessionCid);
   const [rawInput, ...files] = positional;
   // 非系统消息一律剥掉手打的系统保留头（「Claude 审查通过 · 可拍板」等）
-  const { text: rawText, stripped } = engine === "review" ? { text: rawInput || "", stripped: false } : stripReservedHeads(rawInput || "");
+  let { text: rawText, stripped } = engine === "review" ? { text: rawInput || "", stripped: false } : stripReservedHeads(rawInput || "");
   if (stripped) console.error("⚠️ 正文里有系统保留头（审查结论/验收标签），已改成「窗口自述」。");
+
+  // 微信短消息硬卡控：窗口超规直接拒发；系统票据消息自动落盘只发摘要
+  const brev = checkWeixinBrevity(rawText, files);
+  if (!brev.ok) {
+    if (ticket) {
+      const spilled = spillToOutbox(rawText, ticket.engine || "job");
+      console.error(`✂️ 系统消息超规（${brev.reasons.join("；")}），全文已落盘 ${spilled.file}，微信只发摘要。`);
+      rawText = spilled.text;
+    } else {
+      console.error(
+        [
+          `❌ 拒发：微信是手机聊天窗口，这条不像人话。`,
+          ...brev.reasons.map((r) => `   - ${r}`),
+          `请改成 150~300 字（最多 500 字）的人话：一句结论 + 下一步 / 要 eru 拍板的事。`,
+          `不要贴整篇 .md、不要表格、不要长列表；详细内容写进文件留在电脑上，eru 要看再把文件作为附件发（正文只写一句说明）。`,
+        ].join("\n")
+      );
+      process.exit(3);
+    }
+  } else if (brev.soft) {
+    console.error(`⚠️ 正文 ${brev.len} 字，日常汇报建议 300 字以内（本次照发）。`);
+  }
   if (!sessionCid && !isSystemNotificationText(rawText)) {
     console.error("⚠️ 未传 --session=<会话ID>：这条消息记为「未归属」，声称完成也不会给绿勾。");
   }
