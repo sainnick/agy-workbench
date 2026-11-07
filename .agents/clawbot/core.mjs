@@ -280,6 +280,18 @@ export function nextEpisodeReminders(st = loadRouterState(), now = Date.now(), o
       out.push({ key: p.id, name: p.name, kind: "decide", prev, lastAt, text: `⏳ 本期（${prev}）还等你拍板：${p.next || headline || "看一下进度"}` });
       continue;
     }
+    // 本期仍在制作/审校中（status === "running"）→ 绝不能谎称「上一期已交片」！
+    if (p.status === "running") {
+      out.push({
+        key: p.id,
+        name: p.name,
+        kind: "running",
+        prev,
+        lastAt,
+        text: `🛠️ 本期进行中（尚未交成片）：${headline || prev}${p.next ? ` → 下一步：${p.next}` : ""}`,
+      });
+      continue;
+    }
     out.push({
       key: p.id,
       name: p.name,

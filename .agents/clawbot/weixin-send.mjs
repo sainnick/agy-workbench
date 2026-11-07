@@ -5,13 +5,17 @@
  * 用法：
  *   node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs "文本消息" [/绝对路径/文件1 ...] [--session=<cid>] [--title=<标题>]
  *        [--proof=file:/绝对路径] [--proof=url:地址] [--proof=mock:/项目目录] [--proof=research:/调研证据.md] [--cwd=/回执相对路径的基准目录]
+ *        [--task=<msg编号>] [--commitment=<c编号>]
  *   node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs --tool-start "<工具名>"
  *   node /Users/eru/Desktop/agy工作站/.agents/clawbot/weixin-send.mjs --tool-end "<工具名>"
  *
  * 验收 Gate（脚本强制，不靠自觉；2026-11-07 Claude 加固后的格式）：
  *   - 正常聊天/确认/提问：原样发出，不加任何横幅
  *   - 交付汇报或核验异常：只在正文末尾加一行附注，如「— 🧾 已核验: a.mp4✓ | 🔎 已交 Claude 审查」「— ⚠️ 缺回执·自述」
- *   - 带附件时：正文先单独发文字，附件随后逐个发（附件说明在微信里会被吞）
+ *   - 带附件时：先发纯正文（不带回执）→ 逐个传附件 → 全部送达才补发「🧾 验收回执」并落账；
+ *     任一附件失败 → 发「⚠️ 附件上传失败，本次交付未完成」，记 attachment_failed，不核销承诺（退出码 4）
+ *   - --task=<msg编号> 显式绑定任务，核销只找该任务的承诺；--commitment=<c编号> 精确核销
+ *   - 正文声称 Claude/Codex 做过但查无真实调用 → 分句就地标「〔未核实·查无Claude调用〕」，不给绿勾
  *   - --engine= / AGY_ENGINE 已停用；系统身份只认 job-runner 的一次性票据 CLAWBOT_JOB_TICKET
  *   - 正文里手打的系统保留头（「Claude 审查通过 · 可拍板」等）一律剥成「窗口自述」
  *   - 未传项目 --session 的「完成」永不给绿勾；先发成功、再写 proofs.jsonl / 核销承诺 / 排审查
@@ -33,8 +37,9 @@ import { CDN_BASE_URL } from "./dist/src/auth/accounts.js";
 import { initializeQuoteStore } from "./dist/src/messaging/quote-store.js";
 import { readJson, updateJson, appendJsonl, readJsonlTail } from "./state-io.mjs";
 import { processOutgoing, holdForReview } from "./commitments.mjs";
+import { verifyTicketSig } from "./ticket.mjs";
 import { PEER_FILE, MSG_MAP_FILE, HUB_DIR, UUID_RE, JOBS_DIR, CLAWBOT_DIR, resolveMirror, loadRules, loadRouterState, updateRouterState, routerCidSet, routeKeyForCid, prunePending, clearProjectPending } from "./core.mjs";
-import { runProof, checkAcceptance, detectCompletionClaim, detectResearchClaim, detectEngineClaims, hasEngineEvidence, PROOFS_FILE, DELEGATIONS_FILE } from "./proof.mjs";
+import { runProof, checkAcceptance, detectCompletionClaim, detectResearchClaim, detectEngineClaims, markUnverifiedEngineClaims, hasEngineEvidence, PROOFS_FILE, DELEGATIONS_FILE } from "./proof.mjs";
 
 const MSG_MAP_MAX_IDS = 3000;
 
@@ -404,6 +409,11 @@ export function consumeJobTicket(nonce) {
     fs.rmSync(f, { force: true });
   } catch {}
   if (!t?.jobId || Date.now() - (t.createdAt || 0) > 2 * 3600_000) return null;
+  // HMAC 签名（GPT 二审 P1-1）：密钥缺失/权限不对/签名不符/nonce 与文件名不一致 → 无票
+  if (t.nonce !== nonce || !verifyTicketSig(t)) {
+    console.error("⚠️ 票据签名校验失败，按普通窗口消息处理。");
+    return null;
+  }
   let job = null;
   try {
     job = JSON.parse(fs.readFileSync(path.join(JOBS_DIR, `${t.jobId}.json`), "utf8"));
@@ -496,10 +506,17 @@ async function applyProofGate({ text, proofs, files, sessionCid, cwd, engine = "
   if (detectResearchClaim(text) && !specs.some((p) => p.startsWith("research:"))) tags.push("🔍 调研无证据");
   if (verdict !== "rejected" && results.some((r) => r.level === "fail")) tags.push("❌ 回执核验失败");
   if (verdict !== "rejected" && results.some((r) => r.mock)) tags.push("🧪 Mock 原型");
+  // 身份声明（P1-1）：持有效签名票据的同引擎后台任务免查；其余一律查近 6 小时真实调用，查不到就就地打标改写
+  const impostor = [];
   for (const eng of detectEngineClaims(text)) {
+    if (engine && engine === eng) continue;
     const ev = await hasEngineEvidence(eng, 6, routeCwd);
-    if (!ev.ok) tags.push(`🚫 查无 ${eng === "claude" ? "Claude" : "Codex"} 调用·疑似冒充`);
+    if (!ev.ok) {
+      impostor.push(eng);
+      tags.push(`🚫 查无 ${eng === "claude" ? "Claude" : "Codex"} 调用·疑似冒充`);
+    }
   }
+  const rewrittenText = impostor.length ? markUnverifiedEngineClaims(text, impostor) : text;
 
   const icon = { ok: "✓", warn: "⚠", fail: "✗" };
   const short = (r) => `${r.kind === "file" || r.kind === "research" ? path.basename(r.target) : r.kind === "mock" ? "mock扫描" : r.target.slice(0, 40)}${icon[r.level] || ""}`;
@@ -514,20 +531,34 @@ async function applyProofGate({ text, proofs, files, sessionCid, cwd, engine = "
     note = `— ${[head, ...rest].filter(Boolean).join(" | ")}`;
     if (note === "— ") note = "";
   }
-  return { note, tags, receipts, verdict, results, claim, rk, route, acc };
+  // 冒充身份的交付不算通过：不发绿勾、不核销承诺、不排审查
+  if (impostor.length && (verdict === "accepted" || verdict === "reviewing")) {
+    verdict = "impostor";
+    note = note.replace(/^— 🧾 已核验:/, "— 🧾");
+  }
+  return { note, tags, receipts, verdict, results, claim, rk, route, acc, text: rewrittenText, impostor };
 }
 
-/** 发送成功之后才落账：proofs.jsonl、承诺核销/登记、审查排队（审计 P0-5 / P1-3） */
-function commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, sent }) {
+/**
+ * 发送成功之后才落账：proofs.jsonl、承诺核销/登记、审查排队（审计 P0-5 / P1-3）
+ * delivery: "sent" 全部送达 | "failed" 正文都没发出去 | "attachment_failed" 正文发了、附件没全到（GPT 二审 P1-3）
+ * 只有 "sent" 才核销 / 登记承诺 / 排审查；其余只记一条不通过的账。
+ */
+function commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, delivery, taskId = null, commitmentId = null, messageId = null, failedFiles = [] }) {
   if (engine === "review") return;
-  if (gate.claim || gate.results.length || gate.tags.length) {
+  const sent = delivery === "sent";
+  if (gate.claim || gate.results.length || gate.tags.length || !sent) {
     appendJsonl(PROOFS_FILE, {
       session: sessionCid || "unassigned",
       routeKey: gate.rk,
       claim: gate.claim,
-      verdict: gate.verdict,
-      tags: gate.tags,
+      verdict: sent ? gate.verdict : delivery,
+      tags: sent ? gate.tags : [...gate.tags, delivery === "attachment_failed" ? "⚠️ 附件上传失败·交付未完成" : "❌ 微信发送失败"],
       sent,
+      delivery,
+      ...(failedFiles.length ? { failedFiles } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(messageId ? { messageId } : {}),
       proofs: gate.results.map(({ kind, target, level, detail }) => ({ kind, target, level, detail })),
       textHead: String(rawText || "").slice(0, 80),
     });
@@ -540,13 +571,54 @@ function commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, sent
     } catch {}
   }
   try {
-    // 承诺追踪：只有「验收通过」才算兑现；调研类承诺单独认 research 回执
-    const fulfilling = gate.verdict === "accepted" ? gate.results : gate.results.filter((r) => r.kind === "research");
-    const cm = processOutgoing({ cid: sessionCid, title: sessionTitle, text: rawText || "", results: fulfilling, dryRun: false });
+    // 承诺追踪：只有「验收通过」才算兑现；调研类承诺单独认 research 回执；冒充身份的一律不兑现
+    const fulfilling = gate.verdict === "accepted" ? gate.results : gate.verdict === "impostor" ? [] : gate.results.filter((r) => r.kind === "research");
+    const cm = processOutgoing({ cid: sessionCid, title: sessionTitle, text: rawText || "", results: fulfilling, taskId, commitmentId, messageId, dryRun: false });
+    if (cm.fulfilled.length) console.log(`✔️ 核销承诺 ${cm.fulfilled.map((c) => c.id).join("、")}`);
     if (cm.registered.length) console.log(`📝 登记承诺 ${cm.registered.map((c) => `${c.id}(${c.dueMin}分钟)`).join("、")}`);
+    if (cm.merged?.length) console.log(`🔁 合并进已有承诺 ${cm.merged.map((c) => c.id).join("、")}（同窗最多 1 条活跃）`);
   } catch (e) {
     console.error(`承诺登记失败（不影响发送）：${String(e?.message || e)}`);
   }
+}
+
+/**
+ * 测试专用假发送通道：只有脚本**不在**生产目录（隔离测试副本）时才生效，生产目录里设了也无效，
+ * 防止窗口用环境变量「假装发了微信」来核销承诺。
+ */
+const PROD_CLAWBOT_DIR = path.join(HUB_DIR, ".agents", "clawbot");
+function fakeTransport() {
+  const f = process.env.CLAWBOT_FAKE_TRANSPORT;
+  if (!f) return null;
+  let here = CLAWBOT_DIR;
+  let prod = PROD_CLAWBOT_DIR;
+  try {
+    here = fs.realpathSync(CLAWBOT_DIR);
+    prod = fs.realpathSync(PROD_CLAWBOT_DIR);
+  } catch {}
+  if (here === prod) {
+    console.error("⚠️ CLAWBOT_FAKE_TRANSPORT 在生产目录无效，已忽略。");
+    return null;
+  }
+  const log = (o) => fs.appendFileSync(f, JSON.stringify({ ts: Date.now(), ...o }) + "\n");
+  let n = 0;
+  return {
+    text: async ({ text }) => {
+      const messageId = `fake-t${++n}`;
+      log({ type: "text", messageId, text });
+      return { messageId };
+    },
+    media: async ({ filePath }) => {
+      const fail = String(process.env.CLAWBOT_FAKE_FAIL_MEDIA || "");
+      if (fail && path.basename(filePath) === fail) {
+        log({ type: "media_fail", file: path.basename(filePath) });
+        throw new Error(`fake upload failure: ${path.basename(filePath)}`);
+      }
+      const messageId = `fake-m${++n}`;
+      log({ type: "media", messageId, file: path.basename(filePath) });
+      return { messageId };
+    },
+  };
 }
 
 async function cancelTypingIfActive(peer) {
@@ -575,7 +647,7 @@ async function main() {
   const rawArgs = process.argv.slice(2);
   if (rawArgs.length === 0 || rawArgs.includes("--help") || rawArgs.includes("-h")) {
     console.log(
-      "用法:\n  node weixin-send.mjs \"文本内容\" [文件...] --session=<cid> [--title=<标题>] [--proof=file:/绝对路径|url:地址|mock:/目录 ...] [--cwd=目录]\n  node weixin-send.mjs --tool-start \"<工具名>\"\n  node weixin-send.mjs --tool-end \"<工具名>\""
+      "用法:\n  node weixin-send.mjs \"文本内容\" [文件...] --session=<cid> [--title=<标题>] [--proof=file:/绝对路径|url:地址|mock:/目录 ...] [--cwd=目录] [--task=<msg编号>] [--commitment=<c编号>]\n  node weixin-send.mjs --tool-start \"<工具名>\"\n  node weixin-send.mjs --tool-end \"<工具名>\""
     );
     process.exit(0);
   }
@@ -585,6 +657,8 @@ async function main() {
   const ticket = process.env.CLAWBOT_JOB_TICKET ? consumeJobTicket(process.env.CLAWBOT_JOB_TICKET) : null;
   const engine = ticket?.engine || "";
   let cwdFlag = "";
+  let taskFlag = "";
+  let commitmentFlag = "";
   let toolStart = "";
   let toolEnd = "";
   const proofs = [];
@@ -599,6 +673,8 @@ async function main() {
     else if (a.startsWith("--engine=")) engineFlagIgnored = true;
     else if (a.startsWith("--cwd=")) cwdFlag = a.slice("--cwd=".length);
     else if (a.startsWith("--proof=")) proofs.push(a.slice("--proof=".length));
+    else if (a.startsWith("--task=")) taskFlag = a.slice("--task=".length).trim();
+    else if (a.startsWith("--commitment=")) commitmentFlag = a.slice("--commitment=".length).trim();
     else if (a === "--dry-run") dryRun = true;
     else if (a === "--tool-start" && rawArgs[i + 1]) toolStart = rawArgs[++i];
     else if (a === "--tool-end" && rawArgs[i + 1]) toolEnd = rawArgs[++i];
@@ -677,6 +753,24 @@ async function main() {
     console.error("⚠️ 未传 --session=<会话ID>：这条消息记为「未归属」，声称完成也不会给绿勾。");
   }
   const gate = await applyProofGate({ text: rawText, proofs, files, sessionCid, cwd: cwdFlag, engine, project: ticket?.project || null });
+  if (gate.impostor?.length) {
+    rawText = gate.text;
+    console.error(`🚫 正文声称 ${gate.impostor.join("/")} 做过，但查不到真实调用记录：已就地标「未核实」，不给绿勾、不核销承诺。`);
+  }
+  const self = inferSessionIdentity({ sessionCid, sessionTitle, engine });
+  const projLabel = (sessionTitle || gate.route?.name || self.title || "").trim();
+  if (
+    rawText &&
+    projLabel &&
+    projLabel !== "未归属" &&
+    projLabel !== "AGY 主控会话" &&
+    !isSystemNotificationText(rawText) &&
+    !rawText.trim().startsWith("【") &&
+    !rawText.trim().startsWith(`[${projLabel}`) &&
+    !rawText.includes(`【${projLabel}】`)
+  ) {
+    rawText = `【${projLabel}】${rawText.trim()}`;
+  }
   // 极简格式：正文原样，只有交付/异常时末尾带一行附注；不再有顶部警告墙和多行回执块
   const text = formatWeixinText(gate.note ? `${rawText}\n\n${gate.note}` : rawText);
 
@@ -691,7 +785,6 @@ async function main() {
   }
 
   // 60 秒去重：按「会话 + 正文」判重，不同窗口说同一句话不会被吞（审计 P1-3）
-  const self = inferSessionIdentity({ sessionCid, sessionTitle, engine });
   if (text && files.length === 0) {
     try {
       const map = readJson(MSG_MAP_FILE, { recent: [] });
@@ -708,30 +801,74 @@ async function main() {
     } catch {}
   }
 
+  // 发送顺序（GPT 二审 P1-3）：
+  //   无附件：正文 + 附注一条发完 → 落账
+  //   有附件：先发纯正文（不带 🧾 回执）→ 逐个传附件 → 全部成功才补发「🧾 验收回执」并落账；
+  //           任一附件失败：立刻发「⚠️ 附件上传失败，本次交付未完成」，只记一条不通过的账，绝不核销
+  const fake = fakeTransport();
+  const sendText = (t) => (fake ? fake.text({ text: t }) : sendMessageWeixin({ to: peer.fromUserId, text: t, opts }));
+  const sendMedia = (filePath) => (fake ? fake.media({ filePath }) : sendWeixinMediaFile({ filePath, to: peer.fromUserId, text: "", opts, cdnBaseUrl: peer.cdnBaseUrl || CDN_BASE_URL }));
+  const bodyOnly = files.length && gate.note ? formatWeixinText(rawText) : text;
+  const sys = engine === "review";
   let identity = null;
+  let lastMessageId = null;
+  const delivered = [];
   try {
-    // 1) 正文永远单独作为文字消息先发：附件（.md/.docx/.pdf/.zip 等）的说明文字在微信里会被吞，只剩 [文件]
-    if (text) {
-      const res = await sendMessageWeixin({ to: peer.fromUserId, text, opts });
-      identity = recordMessageSessionMap({ messageId: res.messageId, serverMessageId: res.serverMessageId, body: text, sessionCid, sessionTitle, engine, filePath: files[0] ? path.resolve(files[0]) : null, system: engine === "review" });
+    if (bodyOnly) {
+      const res = await sendText(bodyOnly);
+      lastMessageId = res.messageId || lastMessageId;
+      identity = recordMessageSessionMap({ messageId: res.messageId, serverMessageId: res.serverMessageId, body: bodyOnly, sessionCid, sessionTitle, engine, filePath: files[0] ? path.resolve(files[0]) : null, system: sys });
       console.log(`✅ 已发送微信正文: messageId=${res.messageId}${res.serverMessageId ? ` svrId=${res.serverMessageId}` : ""}`);
     }
-    // 2) 再逐个发附件（不带说明文字）
-    for (const f of files) {
-      const filePath = path.resolve(f);
-      const res = await sendWeixinMediaFile({ filePath, to: peer.fromUserId, text: "", opts, cdnBaseUrl: peer.cdnBaseUrl || CDN_BASE_URL });
-      identity =
-        recordMessageSessionMap({ messageId: res.messageId, serverMessageId: res.serverMessageId, body: `[文件: ${path.basename(filePath)}] ${text.slice(0, 200)}`, filePath, sessionCid, sessionTitle, engine, system: engine === "review" }) || identity;
-      console.log(`✅ 已发送附件 ${path.basename(filePath)}: messageId=${res.messageId}${res.serverMessageId ? ` svrId=${res.serverMessageId}` : ""}`);
-    }
   } catch (err) {
-    // 发送失败（如 ret=-2）：只记一条 sent:false 的账，绝不核销承诺、不排审查
-    commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, sent: false });
-    throw err;
-  } finally {
+    commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, delivery: "failed", taskId: taskFlag || null });
     await cancelTypingIfActive(peer);
+    throw err;
   }
-  commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, sent: true });
+  let failed = null;
+  for (const f of files) {
+    const filePath = path.resolve(f);
+    try {
+      const res = await sendMedia(filePath);
+      lastMessageId = res.messageId || lastMessageId;
+      delivered.push(path.basename(filePath));
+      identity =
+        recordMessageSessionMap({ messageId: res.messageId, serverMessageId: res.serverMessageId, body: `[文件: ${path.basename(filePath)}] ${bodyOnly.slice(0, 200)}`, filePath, sessionCid, sessionTitle, engine, system: sys }) || identity;
+      console.log(`✅ 已发送附件 ${path.basename(filePath)}: messageId=${res.messageId}${res.serverMessageId ? ` svrId=${res.serverMessageId}` : ""}`);
+    } catch (err) {
+      failed = { file: path.basename(filePath), error: String(err?.message || err).slice(0, 120) };
+      break;
+    }
+  }
+  if (failed) {
+    const left = files.slice(delivered.length).map((f) => path.basename(f));
+    const alert = formatWeixinText(
+      `⚠️ 附件上传失败，本次交付未完成（${delivered.length}/${files.length} 个已送达；失败：${failed.file}${left.length > 1 ? `，未发：${left.slice(1).join("、")}` : ""}）。上面那条说明不算交付，回执作废。`
+    );
+    try {
+      await sendText(alert);
+    } catch (e) {
+      console.error(`告警也没发出去：${String(e?.message || e)}`);
+    }
+    commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, delivery: "attachment_failed", taskId: taskFlag || null, failedFiles: left });
+    await cancelTypingIfActive(peer);
+    console.error(`❌ 附件 ${failed.file} 上传失败：${failed.error}。已告警 eru，未核销任何承诺。`);
+    process.exit(4);
+  }
+  if (files.length && gate.note) {
+    // 附件全部送达，才补发验收回执
+    try {
+      const res = await sendText(formatWeixinText(gate.note.replace(/^—\s*/, "")));
+      lastMessageId = res.messageId || lastMessageId;
+      recordMessageSessionMap({ messageId: res.messageId, serverMessageId: res.serverMessageId, body: gate.note, sessionCid, sessionTitle, engine, system: true });
+    } catch (err) {
+      commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, delivery: "attachment_failed", taskId: taskFlag || null });
+      await cancelTypingIfActive(peer);
+      throw err;
+    }
+  }
+  await cancelTypingIfActive(peer);
+  commitAfterSend({ gate, sessionCid, sessionTitle, rawText, engine, delivery: "sent", taskId: taskFlag || null, commitmentId: commitmentFlag || null, messageId: lastMessageId });
   if (identity && engine !== "review") {
     recordPendingReply({ cid: identity.cid, title: identity.title, body: rawText || "", filePath: files[0] || null });
   }

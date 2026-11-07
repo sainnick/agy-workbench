@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="wb-token" content="__WORKBENCH_TOKEN__">
 <title>波妞工作台</title>
 <style>
 :root{
@@ -257,6 +258,8 @@ td.tt{max-width:360px;overflow:hidden;text-overflow:ellipsis}
 <div class="toast" id="toast"></div>
 
 <script>
+const WB_TOKEN=document.querySelector('meta[name="wb-token"]')?.content||'';
+const post=(u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json','X-Workbench-Token':WB_TOKEN},body:JSON.stringify(b)});
 const STATUS={running:'进行中',decide:'待拍板',blocked:'卡住',idle:'休眠',stopped:'已停',done:'完成'};
 const SDOT={running:'g',decide:'o',blocked:'r',idle:'',stopped:'h',done:'b'};
 const ENG={agy:{n:'AGY',c:'var(--agy)'},claude:{n:'Claude',c:'var(--claude)'},codex:{n:'Codex',c:'var(--codex)'}};
@@ -444,7 +447,7 @@ async function renderDetail(){
     <div class="blk"><h2 class="gtitle">往来</h2><div class="chat" id="chat"></div></div>
   </div>`;
   $('#fStatus').onchange=async e=>{
-    const r=await fetch('/api/project/'+encodeURIComponent(p.id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:e.target.value})});
+    const r=await post('/api/project/'+encodeURIComponent(p.id),{status:e.target.value});
     if(r.ok){ toast('已更新'); await load(); } else toast('更新失败');
   };
   const ta=$('#cText'), sb=$('#cSend');
@@ -454,7 +457,7 @@ async function renderDetail(){
       const text=ta.value.trim(); if(!text) return;
       sb.disabled=true; sb.textContent='发送中…';
       try{
-        const r=await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:p.id,text})});
+        const r=await post('/api/send',{project:p.id,text});
         const j=await r.json();
         if(!r.ok||j.error) throw new Error(j.error||'发送失败');
         ta.value=''; dirty=false; toast(`已发给「${j.title}」，回复会发到你微信`);
@@ -562,7 +565,7 @@ function closeSheet(){ $('#sheet').classList.remove('on'); $('#scrim').classList
 document.addEventListener('click',async e=>{
   const t=e.target.closest('[data-view],[data-proj],[data-path],[data-sess],th[data-k]'); if(!t) return;
   if(t.dataset.view) return go(t.dataset.view);
-  if(t.dataset.path){ const r=await fetch('/api/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:t.dataset.path})}); const j=await r.json(); if(!j.ok) toast(j.error||'打不开'); return; }
+  if(t.dataset.path){ const r=await post('/api/open',{path:t.dataset.path}); const j=await r.json(); if(!j.ok) toast(j.error||'打不开'); return; }
   if(t.dataset.proj){ selProj=t.dataset.proj; if(view!=='projects') return go('projects'); document.querySelectorAll('.prow').forEach(r=>r.setAttribute('aria-selected',r.dataset.proj===selProj)); return renderDetail(); }
   if(t.dataset.sess){ const [en,id]=t.dataset.sess.split('|'); return openSession(en,id); }
   if(t.dataset.k){ if(sortK===t.dataset.k) sortDir*=-1; else { sortK=t.dataset.k; sortDir=-1; } return vSessions(); }

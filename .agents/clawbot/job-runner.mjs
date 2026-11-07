@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import { appendJsonl } from "./state-io.mjs";
 import { CLAWBOT_DIR, HUB_DIR, JOBS_DIR, loadRouterState, updateRouterState, loadInboundMsg, clearProjectPending } from "./core.mjs";
 import { DELEGATIONS_FILE } from "./proof.mjs";
+import { loadTicketSecret, signTicket, TICKET_SECRET_FILE } from "./ticket.mjs";
 
 const CLAUDE_BIN = "/Users/eru/.local/bin/claude";
 const CODEX_BIN = "/opt/homebrew/bin/codex";
@@ -218,8 +219,15 @@ function issueTicket(job, role) {
   if (!job?.id) return null;
   const dir = path.join(JOBS_DIR, "tickets");
   fs.mkdirSync(dir, { recursive: true });
+  const secret = loadTicketSecret({ create: true });
+  if (!secret) {
+    console.error(`⚠️ 票据密钥 ${TICKET_SECRET_FILE} 不可用（缺失或权限不是 0600），本条按普通消息发送`);
+    return null;
+  }
   const nonce = crypto.randomBytes(16).toString("hex");
-  fs.writeFileSync(path.join(dir, `${nonce}.json`), JSON.stringify({ jobId: job.id, engine: role === "review" ? "review" : job.engine, role, createdAt: Date.now(), pid: process.pid }));
+  const t = { nonce, jobId: job.id, engine: role === "review" ? "review" : job.engine, role, createdAt: Date.now(), pid: process.pid };
+  t.sig = signTicket(t, secret); // HMAC-SHA256（GPT 二审 P1-1）：手写 JSON 票据验不过
+  fs.writeFileSync(path.join(dir, `${nonce}.json`), JSON.stringify(t), { mode: 0o600 });
   return nonce;
 }
 
@@ -344,7 +352,8 @@ async function handleReviewJob(job) {
   if (res.verdict === "PASS") {
     try {
       const { processOutgoing } = await import("./commitments.mjs");
-      processOutgoing({ cid: job.agyCid, title: job.title, text: "", results: [{ kind: "accepted", level: "ok" }] });
+      // 精准核销（P1-4）：带任务 ID 与原交付正文，匹配不上就不核销
+      processOutgoing({ cid: job.agyCid, title: job.title, text: job.claimText || "", taskId: job.msgId || null, results: [{ kind: "accepted", level: "ok", target: (job.evidence || [])[0] || "" }], register: false });
     } catch {}
     await sendWeixin([`✅【Claude 审查通过 · 可拍板】${job.title}\n\n${res.notes || "（无补充意见）"}`, ...files, ...session], sys);
     return;

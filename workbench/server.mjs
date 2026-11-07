@@ -8,6 +8,7 @@
  *   - Codex 线程：~/.codex/sqlite/codex.db（只读）
  *   - 微信桥：.agents/clawbot/bridge.log、events.jsonl、router_state.json（不读 latest_peer.json，里面有 token）
  * 唯一写入：workbench/projects.json（页面上改项目状态时）
+ * 写接口（所有非 GET）必须带 X-Workbench-Token（进程级随机令牌，GET / 时注入页面），否则 403
  *
  * 启动：node /Users/eru/Desktop/agy工作站/workbench/server.mjs   → http://127.0.0.1:4800
  */
@@ -16,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
 import os from "node:os";
+import crypto from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { nextEpisodeReminders, isMediaProject } from "../.agents/clawbot/core.mjs";
@@ -906,6 +908,19 @@ function readBody(req) {
 }
 
 const ALLOWED_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+
+/**
+ * 写接口控制令牌（GPT 二审 P1-2）：进程级随机 32 字节，每次启动换新，不落盘。
+ * 只在 GET / 渲染页面时注入 <meta name="wb-token">；所有非 GET 请求必须带 X-Workbench-Token，否则 403。
+ * 防的是「本机别的进程 / 跨站网页不打开页面就直接 POST /api/send 指挥窗口」。
+ * 边界：能以同一用户身份先 GET / 的本机进程仍能读到令牌——这是同源注入方案的固有上限。
+ */
+const CONTROL_TOKEN = crypto.randomBytes(32).toString("hex");
+function tokenOk(req) {
+  const got = Buffer.from(String(req.headers["x-workbench-token"] || ""));
+  const want = Buffer.from(CONTROL_TOKEN);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   try {
@@ -917,8 +932,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== "GET" && origin && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
       return send(res, 403, { error: "forbidden" });
     }
+    if (req.method !== "GET" && req.method !== "HEAD" && !tokenOk(req)) {
+      return send(res, 403, { error: "forbidden: missing or invalid X-Workbench-Token" });
+    }
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-      return send(res, 200, fs.readFileSync(path.join(__dirname, "index.html")), "text/html; charset=utf-8");
+      const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace("__WORKBENCH_TOKEN__", CONTROL_TOKEN);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" });
+      return res.end(html);
     }
     if (req.method === "GET" && url.pathname === "/api/state") {
       return send(res, 200, await buildState());

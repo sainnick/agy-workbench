@@ -13,7 +13,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 
@@ -204,6 +204,7 @@ async function handlePrivilegedSlashCommand(fullText, mediaFiles, account, fromU
       "- `/use <编号>` ：手动锁定默认对话窗口（如 `/use A1` 或 `/use C1`）  ",
       "- `/unlock` ：解除窗口锁定，恢复无感智能语义路由  ",
       "- `/codex <指令>` ：直连本机 Codex (gpt-6.1-sol + Images 2.6) 执行或生图  ",
+      "- `/gpt <问题>` ：后台静默直连桌面版 ChatGPT.app (Chat/Thinking模式，0额度消耗、不抢鼠标；`/gpt --read` 读最新回复，`/gpt new <问题>` 新开对话)  ",
       "- `/claude <路由键> <指令>` ：点名交给本机 Claude CLI 在该项目目录后台执行（如 `/claude echo 审一下全稿`）  ",
       "- `/retry <msg编号> <目标>` ：把存档的原话重投（目标 = 路由键 / claude / claude:<路由键> / new:<标题>）  ",
       "- `/drop <承诺编号>` ：撤销一条不用再做的承诺（编号见 /todo）  ",
@@ -360,6 +361,71 @@ async function handlePrivilegedSlashCommand(fullText, mediaFiles, account, fromU
       to: fromUserId,
       text: `🟣 已交给 Claude（${rules.routes[key].name}），做完直接发你。`,
       opts: sendOpts,
+    });
+    return true;
+  }
+
+  if (cmd === "/gpt" || cmd === "/gpt-new") {
+    const firstTok = (restTokens[0] || "").toLowerCase();
+    const isRead = !argText || firstTok === "--read" || firstTok === "--last" || firstTok === "read" || firstTok === "读";
+    const isNew = cmd === "/gpt-new" || firstTok === "new" || firstTok === "--new" || firstTok === "新";
+    const promptBody = isNew && (firstTok === "new" || firstTok === "--new" || firstTok === "新")
+      ? argText.slice(restTokens[0]?.length || 0).trim()
+      : argText;
+
+    const outPath = path.join(INBOX_DIR, `gpt_chat_${Date.now()}.md`);
+    const cliArgs = isRead
+      ? ["--read", "--out", outPath]
+      : [...(isNew ? ["--new"] : []), "--out", outPath, promptBody];
+
+    if (!isRead) {
+      await sendMessageWeixin({
+        to: fromUserId,
+        text: `🟢 已通过后台无障碍通道发给桌面端 ChatGPT.app${isNew ? "（新聊天）" : ""}，答完立即发回！`,
+        opts: sendOpts,
+      });
+    }
+
+    const child = spawn("/Users/eru/.local/bin/gpt-chat", cliArgs, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let outBuf = "";
+    let errBuf = "";
+    child.stdout.on("data", (d) => { outBuf += String(d); });
+    child.stderr.on("data", (d) => { errBuf += String(d); });
+    child.on("close", async (code) => {
+      const replyText = outBuf.trim();
+      if (code !== 0 || !replyText) {
+        await sendMessageWeixin({
+          to: fromUserId,
+          text: `⚠️ ChatGPT.app 调用返回为空或失败 (code=${code})：${(errBuf || "无输出").slice(0, 160)}`,
+          opts: sendOpts,
+        });
+        return;
+      }
+      if (replyText.length <= 500 && !/\|[\s\-:]+\|/u.test(replyText)) {
+        await sendMessageWeixin({
+          to: fromUserId,
+          text: `🟢 **ChatGPT.app 回复：**\n\n${replyText}`,
+          opts: sendOpts,
+        });
+      } else {
+        const preview = replyText.replace(/\|[^\n]+\|/gu, "").replace(/\n{3,}/gu, "\n\n").trim().slice(0, 360);
+        await sendMessageWeixin({
+          to: fromUserId,
+          text: `🟢 **ChatGPT.app 回复摘要（全文 ${replyText.length} 字见下方 .md 附件）：**\n\n${preview}…`,
+          opts: sendOpts,
+        });
+        if (fs.existsSync(outPath)) {
+          await sendWeixinMediaFile({
+            filePath: outPath,
+            to: fromUserId,
+            text: "",
+            opts: sendOpts,
+            cdnBaseUrl: CDN_BASE_URL,
+          });
+        }
+      }
     });
     return true;
   }
@@ -1277,6 +1343,19 @@ async function main() {
   if (!lock.ok) {
     log(`Another bridge already holds 127.0.0.1:${LOCK_PORT} (${lock.code}); exiting to stay single-instance.`);
     process.exit(0);
+  }
+  // 隔离测试专用（e2e-verification ②）：只占锁不登录微信；生产目录里设了也无效
+  if (process.env.CLAWBOT_LOCK_ONLY === "1") {
+    let here = __dirname;
+    try {
+      here = fs.realpathSync(__dirname);
+    } catch {}
+    if (here !== fs.realpathSync("/Users/eru/Desktop/agy工作站/.agents/clawbot")) {
+      log(`LOCK_ONLY test mode: holding 127.0.0.1:${LOCK_PORT} (pid=${process.pid}), not logging in.`);
+      setInterval(() => {}, 1 << 30);
+      return;
+    }
+    log("CLAWBOT_LOCK_ONLY ignored in production directory.");
   }
   const forceLogin = process.argv.includes("--login");
   const account = await ensureLoggedIn(forceLogin);

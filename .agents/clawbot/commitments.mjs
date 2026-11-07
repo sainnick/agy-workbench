@@ -2,8 +2,10 @@
  * 承诺追踪（防「先答应、后没下文」）
  *
  * - 登记：窗口发微信时说了「马上 / 立刻 / 现在就去 / 正在 + 做某事」，自动登记成一条承诺，带截止时间
+ *   同一窗口最多 1 条活跃承诺：后续承诺 / 进度汇报合并进这一条；「进度汇报」且没给新时间点的不新建（GPT 二审 P1-4）
  *   （句子里写了「10 分钟 / 半小时 / 2 小时」就按它，否则默认 30 分钟，最长 4 小时）
- * - 兑现：同一窗口之后发出带「通过核验的回执」的消息 → 之前的承诺记为已兑现。
+ * - 兑现：同一窗口之后发出带「通过核验的回执」的消息，且能绑定到该承诺（--task / 当前派发任务 / 回执文件名或关键词）
+ *   → 记为已兑现；绑定不上就保持待核验，不盲目核销。
  *   承诺里提到调研 / Deep Research 的，必须是 research 回执通过才算兑现。
  * - 到期：bridge 每分钟巡检，过期没兑现 → 微信提醒 eru + 往该 AGY 窗口发一次系统催办（各一次）
  * - eru 可以用 /drop <编号> 撤销不需要再做的承诺
@@ -17,6 +19,8 @@ export const COMMITMENTS_FILE = path.join(CLAWBOT_DIR, "commitments.json");
 const DEFAULT_DUE_MIN = 30;
 const MAX_DUE_MIN = 240;
 const KEEP_ITEMS = 300;
+/** 无 taskId 时核销所需的最低匹配分：交付物文件名命中（6~10 分）或至少两个关键词（各 2 分） */
+const MIN_MATCH_SCORE = 4;
 /** 超时 4 小时还没兑现：已催过一次、eru 也没再追，自动归档为 expired，不再出现在「答应了还没交」 */
 export const STALE_AFTER_DUE_MS = 4 * 3600_000;
 const isStale = (c, now = Date.now()) => c.status === "open" && now - (c.dueAt || 0) > STALE_AFTER_DUE_MS;
@@ -37,20 +41,42 @@ function parseDueMinutes(sentence) {
   return DEFAULT_DUE_MIN;
 }
 
-/** 从一条外发消息里找出承诺句（排除征求意见的问句） */
+/** 「进度汇报」类阶段性消息：开头就是进度/进展汇报（允许前面有【项目名】） */
+const PROGRESS_HEAD_RE = /^\s*(【[^】]{1,30}】\s*)?(\[[^\]]{1,30}\]\s*)?(🟡|⏳|📍|🔄)?\s*(进度汇报|进度更新|进展汇报|阶段汇报|阶段进展|进度同步|进度)/;
+/** 句子里有没有给出新的具体时间点 */
+const EXPLICIT_TIME_RE = /\d+(\.\d+)?\s*(个)?\s*(分钟|小时)|半(个)?小时|[一两三]\s*(个)?小时|\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*点(半|钟|前|之前)?/;
+
+export function isProgressReport(text) {
+  return PROGRESS_HEAD_RE.test(String(text || "").replace(/\*\*/g, ""));
+}
+
+/**
+ * 从一条外发消息里找出承诺（排除征求意见的问句）。
+ * 一条消息最多合成 1 条承诺（GPT 二审 P1-4：不再一条消息登记 3 个闹钟）。
+ * 开头是「进度汇报」且没给新的具体时间点 → 不算新承诺（返回空数组），只用来刷新已有承诺的进度文本。
+ */
 export function detectPromises(text) {
-  const out = [];
-  const sentences = String(text || "")
-    .replace(/\*\*/g, "")
-    .split(/(?<=[。！!？?\n；;])/);
-  for (const raw of sentences) {
-    const s = raw.trim();
+  const raw = String(text || "").replace(/\*\*/g, "");
+  const hits = [];
+  for (const piece of raw.split(/(?<=[。！!？?\n；;])/)) {
+    const s = piece.trim();
     if (!s || s.length < 6) continue;
     if (/[？?]\s*$/.test(s) || ASKING_RE.test(s)) continue;
     if (!PROMISE_RE.test(s)) continue;
-    out.push({ text: s.slice(0, 120), dueMin: parseDueMinutes(s), needsResearch: RESEARCH_RE.test(s) });
+    hits.push(s);
   }
-  return out.slice(0, 3);
+  if (hits.length === 0) return [];
+  const timed = hits.filter((s) => EXPLICIT_TIME_RE.test(s));
+  if (isProgressReport(raw) && timed.length === 0) return [];
+  const main = timed[0] || hits[0];
+  return [
+    {
+      text: main.slice(0, 120),
+      dueMin: Math.min(...(timed.length ? timed : [main]).map(parseDueMinutes)),
+      explicitTime: timed.length > 0,
+      needsResearch: hits.some((s) => RESEARCH_RE.test(s)),
+    },
+  ];
 }
 
 function load() {
@@ -140,7 +166,11 @@ function settleInDb(db, { cid, commitmentId = null, taskId = null, preferTaskId 
       if (sb !== sa) return sb - sa;
       return (b.createdAt || 0) - (a.createdAt || 0);
     });
-    toFulfill = [candidates[0]];
+    // 精准绑定（GPT 二审 P1-4）：没有显式 taskId 时，只核销「属于当前派发任务」或「回执/正文与承诺明确对得上」的那条；
+    // 都对不上就保持待核验，绝不拿一份不相关的回执结清别的承诺
+    const top = candidates[0];
+    const bound = (preferTaskId && top.taskId === preferTaskId) || scoreCommitmentMatch(top, text, okResults) >= MIN_MATCH_SCORE;
+    toFulfill = bound ? [top] : [];
   }
 
   const targets = okResults.map((r) => r.target).filter(Boolean);
@@ -159,11 +189,11 @@ function settleInDb(db, { cid, commitmentId = null, taskId = null, preferTaskId 
 /**
  * 独立精确核销接口：支持按 commitmentId 或 taskId（或窗口最新匹配项）核销承诺
  */
-export function settleCommitments({ cid, commitmentId = null, taskId = null, text = "", results = [], messageId = null, dryRun = false }) {
+export function settleCommitments({ cid, commitmentId = null, taskId = null, preferTaskId = null, text = "", results = [], messageId = null, dryRun = false }) {
   let fulfilled = [];
   const now = Date.now();
   const apply = (db) => {
-    fulfilled = settleInDb(db, { cid, commitmentId, taskId, text, results, messageId, now });
+    fulfilled = settleInDb(db, { cid, commitmentId, taskId, preferTaskId, text, results, messageId, now });
     return db;
   };
   if (dryRun) apply(structuredClone(load()));
@@ -175,12 +205,13 @@ export function settleCommitments({ cid, commitmentId = null, taskId = null, tex
  * 先兑现旧承诺，再登记新承诺（同一条消息里的回执不会兑现它自己新许下的承诺）。
  * results: proof.runProof 的结果数组
  */
-export function processOutgoing({ cid, title, text, results = [], commitmentId = null, taskId = null, messageId = null, dryRun = false }) {
-  const report = { fulfilled: [], registered: [] };
+export function processOutgoing({ cid, title, text, results = [], commitmentId = null, taskId = null, messageId = null, register = true, dryRun = false }) {
+  const report = { fulfilled: [], registered: [], merged: [] };
   if (!cid || cid === "unassigned") return report;
   // 只有 AGY 执行窗口的承诺才登记：总控窗口和 Claude/Codex 后台结果（claude:xx）说「接下来我会…」时任务已结束，登记了只会白催
-  const canRegister = UUID_RE.test(cid) && !routerCidSet().has(cid);
+  const canRegister = register && UUID_RE.test(cid) && !routerCidSet().has(cid);
   const promises = detectPromises(text);
+  const progress = isProgressReport(text);
   const now = Date.now();
   const routerSt = loadRouterState();
   const activeTaskId = taskId || routerSt.lastDispatch?.[cid]?.msgId || null;
@@ -197,30 +228,7 @@ export function processOutgoing({ cid, title, text, results = [], commitmentId =
       messageId,
       now,
     });
-    // 被催过还没兑现、且催办之后 eru 没给这个窗口派过新消息 → 不再登记新承诺（防「催办 → 我马上补 → 再催」死循环）
-    // eru 派了新任务（lastDispatch 晚于催办）就照常登记
-    const lastDispatchAt = routerSt.lastDispatch?.[cid]?.at || 0;
-    const nudgedOpen = Object.values(db.items).some((c) => c.cid === cid && c.status === "open" && c.remindedAt && c.remindedAt > lastDispatchAt);
-    for (const p of canRegister && !nudgedOpen ? promises : []) {
-      const dup = Object.values(db.items).find((c) => c.cid === cid && c.status === "open" && c.text === p.text);
-      if (dup) continue;
-      const id = `c${now.toString(36).slice(-4)}${crypto.randomBytes(1).toString("hex")}`;
-      const item = {
-        id,
-        cid,
-        taskId: activeTaskId,
-        title: title || cid.slice(0, 8),
-        text: p.text,
-        needsResearch: p.needsResearch,
-        createdAt: now,
-        dueAt: now + p.dueMin * 60_000,
-        dueMin: p.dueMin,
-        status: "open",
-        remindedAt: 0,
-      };
-      db.items[id] = item;
-      report.registered.push(item);
-    }
+    if (canRegister) registerOrMerge(db, { cid, title, text, promises, progress, activeTaskId, routerSt, now, report });
     const ids = Object.keys(db.items);
     if (ids.length > KEEP_ITEMS) {
       ids
@@ -234,6 +242,68 @@ export function processOutgoing({ cid, title, text, results = [], commitmentId =
   if (dryRun) apply(structuredClone(load()));
   else updateJson(COMMITMENTS_FILE, { items: {} }, apply);
   return report;
+}
+
+/**
+ * 同一窗口最多 1 条活跃承诺（GPT 二审 P1-4）：
+ *  - 已有活跃承诺：新承诺 / 新进度合并进去（更新文本），不再叠加新闹钟；
+ *    只有给出新的具体时间点、且不处在「被催过后 eru 还没派新活」的状态，才改截止时间并重新计催
+ *  - 没有活跃承诺：只有真正的承诺句才登记；「进度汇报」且没给新时间点的不登记
+ *  - 历史遗留的多条同窗活跃承诺顺手收拢成最新一条，其余记为 merged
+ */
+function registerOrMerge(db, { cid, title, text, promises, progress, activeTaskId, routerSt, now, report }) {
+  const open = Object.values(db.items)
+    .filter((c) => c.cid === cid && c.status === "open" && !isStale(c, now))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const lastDispatchAt = routerSt.lastDispatch?.[cid]?.at || 0;
+  const p = promises[0] || null;
+  if (open.length) {
+    const keep = open[0];
+    for (const extra of open.slice(1)) {
+      extra.status = "merged";
+      extra.mergedInto = keep.id;
+      extra.mergedAt = now;
+    }
+    const nudgedNoNewTask = keep.remindedAt && keep.remindedAt > lastDispatchAt;
+    const newText = p ? p.text : progress ? String(text || "").replace(/\*\*/g, "").trim().slice(0, 120) : null;
+    if (newText || open.length > 1) {
+      if (newText && newText !== keep.text) {
+        keep.originalText = keep.originalText || keep.text;
+        keep.text = newText;
+      }
+      keep.updatedAt = now;
+      keep.mergedCount = (keep.mergedCount || 0) + (newText ? 1 : 0);
+      if (p?.needsResearch) keep.needsResearch = true;
+      if (p?.explicitTime && !nudgedNoNewTask) {
+        keep.dueAt = now + p.dueMin * 60_000;
+        keep.dueMin = p.dueMin;
+        keep.remindedAt = 0;
+      }
+      if (activeTaskId && !keep.taskId) keep.taskId = activeTaskId;
+      report.merged.push(keep);
+    }
+    return;
+  }
+  if (!p) return;
+  // 被催过还没兑现、且催办之后 eru 没给这个窗口派过新消息 → 不再登记新承诺（防「催办 → 我马上补 → 再催」死循环）
+  const nudgedOpen = Object.values(db.items).some((c) => c.cid === cid && c.status === "open" && c.remindedAt && c.remindedAt > lastDispatchAt);
+  if (nudgedOpen) return;
+  const id = `c${now.toString(36).slice(-4)}${crypto.randomBytes(1).toString("hex")}`;
+  const item = {
+    id,
+    cid,
+    taskId: activeTaskId,
+    title: title || cid.slice(0, 8),
+    text: p.text,
+    needsResearch: p.needsResearch,
+    createdAt: now,
+    dueAt: now + p.dueMin * 60_000,
+    dueMin: p.dueMin,
+    status: "open",
+    remindedAt: 0,
+  };
+  db.items[id] = item;
+  report.registered.push(item);
 }
 
 /** 取出已过期、还没提醒过的承诺，并标记为已提醒 */

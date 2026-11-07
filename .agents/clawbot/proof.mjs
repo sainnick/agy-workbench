@@ -240,13 +240,63 @@ export function detectCompletionClaim(text) {
   return sentences.some((x) => CLAIM.test(x));
 }
 
-/** 正文是否声称由 Claude / Codex 完成了工作 */
-export function detectEngineClaims(text) {
-  const t = String(text || "");
+/**
+ * 身份声明检测（GPT 二审 P1-1）：正文是否声称 Claude / Codex「已经」干过活。
+ * 按分句（。！？；，、换行）逐句判：
+ *   - 句里提到引擎 + 完成态标记（已/了/过/经/由/通过/完成/指出/抓出/清单/意见…）→ 声明
+ *   - 句里提到引擎 + 将来/进行时（正在/准备/随后/立即/马上/打算/待…）且没有完成态 → 计划，不算
+ *   - 否定句（没调 / 还没让 / 未经）→ 不算
+ *   - 中性句（「Claude 盲审：9 分」「Claude 审查结论」）只要带动作词 → 按声明从严
+ * 返回引擎列表；detectEngineClaimClauses 返回具体命中的分句（用于改写打标）。
+ */
+const ENGINE_PATTERNS = {
+  claude: /Claude(\s*(CLI|Code|Opus|Sonnet|Haiku))?|克劳德|\bOpus\b|\bSonnet\b|\bHaiku\b/i,
+  codex: /Codex|codex\s+exec|GPT[-\s]?\d*(\.\d)?|ChatGPT/i,
+};
+const ENGINE_NEG = /(没有?|未|尚未|还没有?|并没有?|不是|没再|别|不要|无需|不用|未经)[^，。]{0,6}(调|用|让|请|交|经|叫|跑|给|由)?[^，。]{0,4}(Claude|克劳德|Opus|Sonnet|Codex|GPT)/i;
+const ENGINE_FUTURE = /(正在|准备|打算|计划|即将|将要|将会|马上|立刻|立即|随后|稍后|待会|等会|一会儿?|接下来|下一步|然后再?|之后再?|回头|待|拟|排队|这就|现在就|我去|我会|我来|会去|再去|要去|去调|再调|启动|开始|发起)/;
+// 强完成态：有它就是在说「已经做了」，哪怕同句里有「正在」
+const ENGINE_PAST_STRONG = /(已经?|[^为除]了(?!解)|(审|看|跑|调|用|测|改|查|评|读|过目|把关)过|经过?|由\s*|通过|完成了?|完毕|出炉|出结果|给出|指出|抓出|挑出|发现|认为|确认|判定|打了?\s*\d|签字|背书|(清单|意见|建议|报告|结论|反馈|审计|评分|打分)(里|中|上|显示|要求|指出)?)/;
+const ENGINE_ACTION = /(完成|写|做|审|跑|出|改|生成|渲染|重构|盲审|复审|挑刺|评|核|验)/;
+
+export function detectEngineClaimClauses(text) {
+  const t = String(text || "")
+    .replace(/\*\*/g, "")
+    .replace(/(做|写|改|弄|跑|审|渲染)完(?!了)\s*(后|就|再|之后|以后|发|给|告诉|马上)/g, "$1");
+  const clauses = t.split(/(?<=[。！!？?；;，,\n])/);
   const out = [];
-  if (/(Claude|克劳德)[^。\n]{0,24}(完成|写|做|审|跑|出|改|生成|渲染|重构)|由\s*Claude/i.test(t)) out.push("claude");
-  if (/(Codex|GPT|codex exec)[^。\n]{0,24}(完成|写|做|审|跑|出|改|生成|盲审|挑刺)|由\s*(Codex|GPT)/i.test(t)) out.push("codex");
+  for (const raw of clauses) {
+    const c = raw.trim();
+    if (!c || /[？?]\s*$/.test(c)) continue;
+    for (const [engine, re] of Object.entries(ENGINE_PATTERNS)) {
+      if (!re.test(c)) continue;
+      if (ENGINE_NEG.test(c)) continue;
+      const past = ENGINE_PAST_STRONG.test(c);
+      const future = ENGINE_FUTURE.test(c);
+      if (past || (!future && ENGINE_ACTION.test(c))) out.push({ engine, clause: c });
+    }
+  }
   return out;
+}
+
+export function detectEngineClaims(text) {
+  return [...new Set(detectEngineClaimClauses(text).map((x) => x.engine))];
+}
+
+/** 把查无调用记录的身份声明分句就地打标，防止截图里只看到「Claude 审过了」 */
+export function markUnverifiedEngineClaims(text, engines) {
+  let t = String(text || "");
+  const set = new Set(engines);
+  const seen = new Set();
+  for (const { engine, clause } of detectEngineClaimClauses(t)) {
+    if (!set.has(engine) || seen.has(clause)) continue;
+    seen.add(clause);
+    const label = engine === "claude" ? "Claude" : "Codex/GPT";
+    const body = clause.replace(/[。！!；;，,\n]+$/, "");
+    const i = t.indexOf(body);
+    if (i >= 0) t = `${t.slice(0, i)}〔未核实·查无${label}调用〕${body}${t.slice(i + body.length)}`;
+  }
+  return t;
 }
 
 function newestMtimeUnder(dir, depth = 2) {

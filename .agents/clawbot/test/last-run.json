@@ -1,0 +1,334 @@
+{
+  "ranAt": "2026-11-07T04:58:04.258Z",
+  "sandbox": "/private/var/folders/fh/xz8bp0157ng3ll0m08fm9t340000gn/T/clawbot-e2e-2qjXhP",
+  "total": 54,
+  "pass": 54,
+  "fail": 0,
+  "prodBridgePid": "19431",
+  "results": [
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "已完成态身份声明 12 种变体全部识别",
+      "pass": true,
+      "detail": "漏判："
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "将来时/进行时/否定/问句 9 种不误判为冒充",
+      "pass": true,
+      "detail": "误判："
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "端到端：冒充分句被就地改写为〔未核实·查无Claude调用〕",
+      "pass": true,
+      "detail": "【E2E测试项目】文稿 draft.md 已完成，〔未核实·查无Claude调用〕已调 Claude 盲审通过。\n\n— 🧾 draft.md✓ | 🚫 查无 Claude 调用·疑似冒充"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "端到端：末尾打标「🚫 查无 Claude 调用·疑似冒充」",
+      "pass": true,
+      "detail": "【E2E测试项目】文稿 draft.md 已完成，〔未核实·查无Claude调用〕已调 Claude 盲审通过。\n\n— 🧾 draft.md✓ | 🚫 查无 Claude 调用·疑似冒充"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "端到端：冒充交付不给「🧾 已核验」绿勾",
+      "pass": true,
+      "detail": "【E2E测试项目】文稿 draft.md 已完成，〔未核实·查无Claude调用〕已调 Claude 盲审通过。\n\n— 🧾 draft.md✓ | 🚫 查无 Claude 调用·疑似冒充"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "端到端：proofs.jsonl 记 verdict=impostor",
+      "pass": true,
+      "detail": "{\"ts\":\"2026-11-07T04:58:00.935Z\",\"session\":\"e2e00000-0000-4000-8000-000000000001\",\"routeKey\":\"e2eproj\",\"claim\":true,\"verdict\":\"impostor\",\"tags\":[\"✅ 已核验\",\"🚫 查无 Claude 调用·疑似冒充\"],\"sent\":true,\"delivery\":\"sent\",\"taskId\":\"mimp\",\"messageId\":\"fake-t1\",\"proofs\":[{\"kind\":\"file\",\"target\":\"/private/var/folders"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "端到端：冒充交付不核销承诺（即使 --task 对得上）",
+      "pass": true,
+      "detail": "{\"cid\":\"e2e00000-0000-4000-8000-000000000001\",\"title\":\"E2E测试项目\",\"needsResearch\":false,\"createdAt\":1794027420859,\"dueAt\":1794029280860,\"dueMin\":30,\"status\":\"open\",\"remindedAt\":0,\"id\":\"cimp001\",\"taskId\":\"mimp\",\"text\":\"马上把 draft.md 文稿写完发你\"}"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "端到端：将来时「正在启动 Claude CLI 复审」不打冒充标",
+      "pass": true,
+      "detail": "【E2E测试项目】已修复签名校验，正在启动 Claude CLI 复审，20 分钟内发你结果。\n\n— ⚠️ 未过验收·只算进度（缺：没有合格交付物（需要：2 小时内生成的文稿文件））"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "未签名（手写 JSON）票据被拒，按普通窗口消息拒发",
+      "pass": true,
+      "detail": "code=3 ⚠️ 票据签名校验失败，按普通窗口消息处理。\n❌ 拒发：微信是手机聊天窗口，这条不像人话。\n   - 正文 810 字，超过 600 字上限\n请改成 150~300 字（最多 500 字）的人话：一句结论 + 下一步 / 要 eru 拍板的事。\n不要贴整篇 .md、不要表格、不要长列表；详细内容写进文件留在电脑上，eru 要看再把文件作为附件发（正文只写一句说明）。\n"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "签名后被篡改字段的票据被拒",
+      "pass": true,
+      "detail": "code=3"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "密钥文件权限不是 0600 时一律不认票",
+      "pass": true,
+      "detail": "code=3"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "有效签名票据被认作系统消息（超长自动落盘只发摘要）",
+      "pass": true,
+      "detail": "code=0 ✂️ 系统消息超规（正文 810 字，超过 600 字上限），全文已落盘 /private/var/folders/fh/xz8bp0157ng3ll0m08fm9t340000gn/T/clawbot-e2e-2qjXhP/clawbot/outbox/20261107125801_claude.md，微信只发摘要。\n"
+    },
+    {
+      "scenario": "① AGY 冒充 Claude 被拦截",
+      "name": "票据一次性：用过即删",
+      "pass": true,
+      "detail": "残留 0 张"
+    },
+    {
+      "scenario": "② 两个 bridge 实例同时启动被端口锁拦截",
+      "name": "同时启动两个实例：恰好一个持锁存活",
+      "pass": true,
+      "detail": "alive=1 logs=[2026-11-07T04:58:01.414Z] [AGY-ClawBot-V3] Another bridge already holds 127.0.0.1:54589 (EADDRINUSE); exiting to stay single-instance.\n | [2026-11-07T04:58:01.414Z] [AGY-ClawBot-V3] LOCK_ONLY test mode: holding 127.0.0.1:54589 (pid=21659), not logging in.\n"
+    },
+    {
+      "scenario": "② 两个 bridge 实例同时启动被端口锁拦截",
+      "name": "落败实例以 0 退出并记录「Another bridge already holds」",
+      "pass": true,
+      "detail": "[2026-11-07T04:58:01.414Z] [AGY-ClawBot-V3] Another bridge already holds 127.0.0.1:54589 (EADDRINUSE); exiting to stay single-instance.\n"
+    },
+    {
+      "scenario": "② 两个 bridge 实例同时启动被端口锁拦截",
+      "name": "持锁实例只占锁、不登录微信（LOCK_ONLY 沙盒模式）",
+      "pass": true,
+      "detail": "[2026-11-07T04:58:01.414Z] [AGY-ClawBot-V3] LOCK_ONLY test mode: holding 127.0.0.1:54589 (pid=21659), not logging in.\n"
+    },
+    {
+      "scenario": "② 两个 bridge 实例同时启动被端口锁拦截",
+      "name": "持锁期间第三个实例启动也被拦截",
+      "pass": true,
+      "detail": "[2026-11-07T04:58:03.011Z] [AGY-ClawBot-V3] Another bridge already holds 127.0.0.1:54589 (EADDRINUSE); exiting to stay single-instance.\n"
+    },
+    {
+      "scenario": "② 两个 bridge 实例同时启动被端口锁拦截",
+      "name": "持锁进程退出后锁自动释放，新实例可接管（无残锁）",
+      "pass": true,
+      "detail": "[2026-11-07T04:58:03.637Z] [AGY-ClawBot-V3] LOCK_ONLY test mode: holding 127.0.0.1:54589 (pid=21666), not logging in.\n"
+    },
+    {
+      "scenario": "② 两个 bridge 实例同时启动被端口锁拦截",
+      "name": "生产 127.0.0.1:47800 当前由唯一的 clawbot-bridge 持有（只读探测）",
+      "pass": true,
+      "detail": "clawbot-bridge pid=19431\n"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "上传失败时脚本退出码 4（不是假装成功）",
+      "pass": true,
+      "detail": "code=4 ❌ 附件 b.md 上传失败：fake upload failure: b.md。已告警 eru，未核销任何承诺。\n"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "先发纯正文（不带 🧾 回执）",
+      "pass": true,
+      "detail": "{\"ts\":1794027483814,\"type\":\"text\",\"messageId\":\"fake-t1\",\"text\":\"两份文稿已完成，见附件。\"}"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "a.md 送达、b.md 失败",
+      "pass": true,
+      "detail": "[{\"ts\":1794027483814,\"type\":\"text\",\"messageId\":\"fake-t1\",\"text\":\"两份文稿已完成，见附件。\"},{\"ts\":1794027483816,\"type\":\"media\",\"messageId\":\"fake-m2\",\"file\":\"a.md\"},{\"ts\":1794027483816,\"type\":\"media_fail\",\"file\":\"b.md\"},{\"ts\":1794027483816,\"type\":\"text\",\"messageId\":\"fake-t3\",\"text\":\"⚠️ 附件上传失败，本次交付未完成（1/2 个已送达；失败"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "立即发出「⚠️ 附件上传失败，本次交付未完成」告警",
+      "pass": true,
+      "detail": "{\"ts\":1794027483816,\"type\":\"text\",\"messageId\":\"fake-t3\",\"text\":\"⚠️ 附件上传失败，本次交付未完成（1/2 个已送达；失败：b.md）。上面那条说明不算交付，回执作废。\"}"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "全程没有发出任何「🧾 验收回执」",
+      "pass": true,
+      "detail": "[{\"ts\":1794027483814,\"type\":\"text\",\"messageId\":\"fake-t1\",\"text\":\"两份文稿已完成，见附件。\"},{\"ts\":1794027483816,\"type\":\"media\",\"messageId\":\"fake-m2\",\"file\":\"a.md\"},{\"ts\":1794027483816,\"type\":\"media_fail\",\"file\":\"b.md\"},{\"ts\":1794027483816,\"type\":\"text\",\"messageId\":\"fake-t3\",\"text\":\"⚠️ 附件上传失败，本次交付未完成（1/2 个已送达；失败"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "proofs.jsonl 记 attachment_failed / sent=false，不是通过",
+      "pass": true,
+      "detail": "{\"ts\":\"2026-11-07T04:58:03.816Z\",\"session\":\"e2e00000-0000-4000-8000-000000000001\",\"routeKey\":\"e2eproj\",\"claim\":true,\"verdict\":\"attachment_failed\",\"tags\":[\"✅ 已核验\",\"⚠️ 附件上传失败·交付未完成\"],\"sent\":false,\"delivery\":\"attachment_failed\",\"failedFiles\":[\"b.md\"],\"taskId\":\"matt\",\"proofs\":[{\"kind\":\"file\",\"target\":\"/"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "承诺未被核销",
+      "pass": true,
+      "detail": "{\"cid\":\"e2e00000-0000-4000-8000-000000000001\",\"title\":\"E2E测试项目\",\"needsResearch\":false,\"createdAt\":1794027423739,\"dueAt\":1794029283739,\"dueMin\":30,\"status\":\"open\",\"remindedAt\":0,\"id\":\"catt001\",\"taskId\":\"matt\",\"text\":\"马上把 a.md 和 b.md 两份文稿写完发你\"}"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "全部成功时顺序为 正文 → 附件 A → 附件 B → 🧾 回执",
+      "pass": true,
+      "detail": "body → media:a.md → media:b.md → receipt"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "全部送达后才记 accepted / sent=true",
+      "pass": true,
+      "detail": "{\"ts\":\"2026-11-07T04:58:03.896Z\",\"session\":\"e2e00000-0000-4000-8000-000000000001\",\"routeKey\":\"e2eproj\",\"claim\":true,\"verdict\":\"accepted\",\"tags\":[\"✅ 已核验\"],\"sent\":true,\"delivery\":\"sent\",\"taskId\":\"matt\",\"messageId\":\"fake-t4\",\"proofs\":[{\"kind\":\"file\",\"target\":\"/private/var/folders/fh/xz8bp0157ng3ll0m08f"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "全部送达后才按 --task 核销承诺",
+      "pass": true,
+      "detail": "{\"cid\":\"e2e00000-0000-4000-8000-000000000001\",\"title\":\"E2E测试项目\",\"needsResearch\":false,\"createdAt\":1794027423739,\"dueAt\":1794029283739,\"dueMin\":30,\"status\":\"fulfilled\",\"remindedAt\":0,\"id\":\"catt001\",\"taskId\":\"matt\",\"text\":\"马上把 a.md 和 b.md 两份文稿写完发你\",\"fulfilledAt\":1794027483897,\"fulfilledBy\":\"file\",\"ful"
+    },
+    {
+      "scenario": "③ 附件上传中断时不记账不核销",
+      "name": "假发送通道仅限沙盒：生产目录内代码有路径守卫",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "GET / 注入 64 位十六进制令牌（占位符已替换）",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "POST /api/send 无令牌 → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "POST /api/project/:id 无令牌 → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "POST /api/open 无令牌 → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "POST /api/send 错误令牌 → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "POST /api/send 截断令牌 → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "POST /api/send 另一进程的令牌（重启即作废） → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "PUT /api/maintain 无令牌 → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "DELETE /api/project/x 无令牌 → 403",
+      "pass": true,
+      "detail": "HTTP 403 {\"error\":\"forbidden: missing or invalid X-Workbench-Token\"}"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "有效令牌通过鉴权（/api/open 非登记路径 → 400，无副作用）",
+      "pass": true,
+      "detail": "HTTP 400"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "只读 GET 接口不需要令牌（不影响页面刷新）",
+      "pass": true,
+      "detail": "HTTP 404"
+    },
+    {
+      "scenario": "④ 4800 工作台无 X-Workbench-Token 写请求返回 403",
+      "name": "index.html 的所有 POST 都经 post() 带 X-Workbench-Token",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "5 条无新时间点的「进度汇报」不新建任何承诺（复现 ad706c0a 事故）",
+      "pass": true,
+      "detail": "[]"
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "真正的承诺照常登记 1 条，带 20 分钟时限与当前任务 ID",
+      "pass": true,
+      "detail": "[{\"id\":\"cn68sd2\",\"cid\":\"e2e00000-0000-4000-8000-0000000000c1\",\"taskId\":\"mt1\",\"title\":\"T1\",\"text\":\"收到，我马上去改 a.md 文稿，20 分钟内发你。\",\"needsResearch\":false,\"createdAt\":1794027484252,\"dueAt\":1794028684252,\"dueMin\":20,\"status\":\"open\",\"remindedAt\":0}]"
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "再发 7 条进度/承诺：同窗仍只有 1 条活跃承诺（合并不叠加）",
+      "pass": true,
+      "detail": "[\"cn68sd2\"]"
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "合并时更新承诺文本并保留原文",
+      "pass": true,
+      "detail": "{\"id\":\"cn68sd2\",\"cid\":\"e2e00000-0000-4000-8000-0000000000c1\",\"taskId\":\"mt1\",\"title\":\"T1\",\"text\":\"我现在去跑一遍渲染，1 小时内给你。\",\"needsResearch\":false,\"createdAt\":1794027484252,\"dueAt\":1794031084255,\"dueMin\":60,\"status\":\"open\",\"remindedAt\":0,\"originalText\":\"收到，我马上去改 a.md 文稿，20 分钟内发你。\",\"updatedAt\":1794027484255,"
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "新承诺给出新时间点（1 小时）才顺延截止",
+      "pass": true,
+      "detail": "dueMin=60"
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "历史遗留 5 条同窗堆积 → 收拢为 1 条活跃，其余记 merged",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "无 taskId、当前派发任务不同、文件名/关键词对不上 → 不核销",
+      "pass": true,
+      "detail": "[]"
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "未归属会话（unassigned）的回执不核销任何承诺",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "别的窗口拿同一 taskId 也核销不了本窗承诺",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "--task=taskA 精准核销且记下交付消息 ID",
+      "pass": true,
+      "detail": "{\"id\":\"cA\",\"cid\":\"e2e00000-0000-4000-8000-0000000000c3\",\"title\":\"T3\",\"taskId\":\"taskA\",\"text\":\"马上写 alpha 调整方案\",\"createdAt\":1794027424256,\"dueAt\":1794028084256,\"dueMin\":30,\"status\":\"fulfilled\",\"remindedAt\":0,\"fulfilledAt\":1794027484257,\"fulfilledBy\":\"file\",\"fulfilledTaskId\":\"taskA\",\"fulfilledMessageId"
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "无 taskId 但交付物文件名与承诺明确对得上 → 核销",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "scenario": "⑤ 承诺账本防重复堆积与精准核销",
+      "name": "生产账本只读复核：ad706c0a 不再有进度汇报类活跃承诺，同窗活跃 ≤ 1",
+      "pass": true,
+      "detail": "[\"cdp20a8:马上发链接并说清！\"]"
+    }
+  ]
+}
